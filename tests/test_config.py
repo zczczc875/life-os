@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+from pydantic import ValidationError
 
 from lifeos.config.settings import Settings, get_settings
 
@@ -46,3 +47,23 @@ def test_settings_accept_direct_override(tmp_path):
     settings = Settings(app_version="1.2.3", data_dir=tmp_path / "x")
     assert settings.app_version == "1.2.3"
     assert settings.data_dir == tmp_path / "x"
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"log_max_bytes": 0},
+        {"log_max_bytes": -1},
+        {"log_backup_count": 0},
+        {"log_backup_count": -1},
+    ],
+)
+def test_invalid_rotation_params_are_rejected(overrides):
+    with pytest.raises(ValidationError):
+        Settings(**overrides)
+
+
+def test_invalid_rotation_params_via_env_are_rejected(monkeypatch):
+    monkeypatch.setenv("LIFEOS_LOG_MAX_BYTES", "0")
+    with pytest.raises(ValidationError):
+        Settings()

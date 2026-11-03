@@ -35,8 +35,8 @@ class Settings(BaseSettings):
     data_dir: Path = Field(default_factory=_default_data_dir)
 
     # 轮转日志参数
-    log_max_bytes: int = 1_000_000
-    log_backup_count: int = 3
+    log_max_bytes: int = Field(default=1_000_000, gt=0)
+    log_backup_count: int = Field(default=3, ge=1)
 
 
 @lru_cache(maxsize=1)
