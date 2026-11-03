@@ -1,6 +1,6 @@
 # LifeOS Phase 1
 
-Windows 本地优先桌面工程。当前交付为 A 的工程骨架和**待 B、C、D 确认的接口草案**；UI、数据库、迁移、配置、日志和 AI Mock 尚待各负责人实现和集成，当前不能启动完整应用。
+Windows 本地优先桌面工程。界面、数据库、配置、日志和 AI Mock 已合入架构分支；接口仍待 B、C、D 共同确认。验收结果和待解决问题见 [集成记录](docs/INTEGRATION.md)。
 
 ## 环境与安装
 
@@ -12,11 +12,11 @@ py -3.12 -m venv .venv
 python -m pip install -e ".[dev]"
 ```
 
-其他模块合并后，使用 `python -m lifeos` 启动。启动顺序和接口契约见 [架构文档](docs/ARCHITECTURE.md)。SQLite 默认目录为 `%LOCALAPPDATA%\LifeOS\data\`；安装包或导入模块时不应创建数据。
+首次启动前先执行下方数据库迁移，再使用 `python -m lifeos` 启动。启动顺序和接口契约见 [架构文档](docs/ARCHITECTURE.md)。SQLite 默认目录为 `%LOCALAPPDATA%\LifeOS\data\`；安装包或导入模块时不应创建数据。
 
 ## 迁移与测试
 
-C 交付 Alembic 配置和初始迁移后，在项目根目录执行 `alembic upgrade head`；具体配置及路径覆盖方式待 C、D 确认并补充。在独立临时数据库上运行测试，禁止测试使用正式数据。
+在项目根目录执行 `python -m alembic upgrade head`。可通过环境变量 `LIFEOS_DATA_DIR` 覆盖数据目录；常规迁移与应用使用相同的配置。配置无效时迁移会报错并停止。`-x url=...` 是显式指定迁移目标的高级选项，使用者需确保该目标与应用一致。测试使用独立临时数据库，不得使用正式数据。
 
 ```powershell
 python -m pytest
@@ -24,4 +24,4 @@ ruff check .
 ruff format --check .
 ```
 
-当前测试仅覆盖 A 的启动编排，不能代替各模块测试、迁移验证或 Windows 图形验收。详见 [验收记录](docs/INTEGRATION.md)。
+当前测试覆盖模块、迁移及真实组件的隔离联调；仍需完成实际使用环境验收。详见 [验收记录](docs/INTEGRATION.md)。

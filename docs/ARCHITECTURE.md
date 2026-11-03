@@ -22,4 +22,4 @@ AI 响应提议为 `TaskExtractionResponse(tasks: list[ExtractedTask])`，每项
 
 ## 文件所有权与顺序
 
-A 维护公共依赖、入口、文档和集成测试；B 维护 `ui/`；C 维护 `infrastructure/database/` 和 `migrations/`；D 维护 `config/`、`infrastructure/logging/` 和 `ai/`。各模块测试由负责人维护。先确认契约并在各自分支实现，再由 A 审查合并与验收。此仓库当前未包含其他成员模块。
+A 维护公共依赖、入口、文档和集成测试；B 维护 `ui/`；C 维护 `infrastructure/database/` 和 `migrations/`；D 维护 `config/`、`infrastructure/logging/` 和 `ai/`。各模块测试由负责人维护。B、C、D 模块已合入架构分支，契约确认及遗留问题见集成记录。
