@@ -45,6 +45,12 @@ def test_setup_logging_is_idempotent(tmp_path):
     assert len(logger.handlers) == handler_count == 1
 
 
+def test_setup_logging_ignores_foreign_handlers(tmp_path):
+    logging.getLogger("lifeos").addHandler(logging.NullHandler())
+    setup_logging(Settings(data_dir=tmp_path))
+    assert (tmp_path / "logs" / "lifeos.log").exists()
+
+
 def test_logging_rotates(tmp_path):
     settings = Settings(data_dir=tmp_path, log_max_bytes=200, log_backup_count=2)
     setup_logging(settings)
