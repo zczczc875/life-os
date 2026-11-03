@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=75"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "lifeos"
+version = "0.1.0"
+description = "Local-first Windows desktop foundation for LifeOS"
+requires-python = ">=3.12"
+dependencies = [
+  "PySide6>=6.7,<7",
+  "SQLAlchemy>=2.0,<3",
+  "alembic>=1.13,<2",
+  "pydantic-settings>=2.2,<3",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8,<10", "pytest-qt>=4.4,<5", "ruff>=0.8,<1"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
