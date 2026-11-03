@@ -26,6 +26,34 @@
 | `tests/test_packaging.py` | 11 项安装 / 打包行为测试 |
 | `tests/test_migrations.py` | 4 项迁移演进测试（叠加、回滚、模型漂移、残留守卫） |
 | `tests/test_settings_contract.py` | 7 项与 D 真实 `Settings` 的契约联调测试 |
+| `tests/test_migration_target.py` | 8 项迁移目标解析测试（A 的审查意见） |
+
+## A 的审查意见处理（2026-11-03）
+
+> 配置出错时停止迁移；统一迁移和应用使用的数据库路径；补充相应测试。
+
+两项意见均已复现确认为真实缺陷，根因相同：`env.py` 自建了一套路径解析，与应用端脱节。
+
+**问题 1：配置出错被静默吞掉**
+
+原 `_url_from_settings()` 捕获异常后 `return None`，继而回退到 `%LOCALAPPDATA%` 默认路径。
+实测：把 `LIFEOS_LOG_MAX_BYTES` 设为非法值后，`Settings` 校验失败，迁移却照常在默认位置建表——
+用户配置的目录被无声忽略。
+现改为抛出 `MigrationTargetError` 并终止，错误信息包含具体的校验失败字段。
+
+**问题 2：迁移与应用可能指向不同文件**
+
+原解析链包含我自造的 `LIFEOS_DATABASE_URL`，优先级高于 `Settings`，而 D 的配置用的是
+`LIFEOS_DATA_DIR`，两套机制互不知情。实测可造成迁移在 A 文件建表、应用打开 B 文件，
+最终表现为 `no such table`。
+现已移除该旁路，迁移与应用统一走 `resolve_target(settings)`。
+`upgrade_to_head()` 另增校验：迁移后读不到 revision 即报错，避免“静默成功但表在别处”。
+
+**测试有效性验证**：新增 8 项测试后，分别将两处修复临时还原，确认测试会失败
+（问题 1 → 2 项失败，问题 2 → 1 项失败），证明不是走空路径的占位测试。
+
+**真实迁移验证**：配置损坏时 `alembic upgrade head` 确实拒绝执行；
+设置 `LIFEOS_DATA_DIR` 后迁移跟随该目录，旧旁路变量已失效，目录下仅生成一个数据库文件。
 
 ## 接口实现情况
 
@@ -146,31 +174,33 @@ Phase 1 只需字符串设置，故 `value` 为 `TEXT`。`updated_at` 为**朴�
 **开发者**（命令行方式仍然可用）：
 
 ```powershell
-# 默认位置：%LOCALAPPDATA%\LifeOS\data\lifeos.sqlite3
+# 跟随应用配置（LIFEOS_DATA_DIR），默认 %LOCALAPPDATA%\LifeOS\data\lifeos.sqlite3
 alembic upgrade head
 
-# 指定数据库（测试或隔离环境）
+# 隔离环境：改配置，迁移与应用会一起跟随
+$env:LIFEOS_DATA_DIR = "D:\tmp\lifeos"; alembic upgrade head
+
+# 仅运维排查时直接指定文件（绕过配置，请谨慎）
 alembic -x url=sqlite+pysqlite:///D:/tmp/lifeos.sqlite3 upgrade head
-# 或
-$env:LIFEOS_DATABASE_URL = "sqlite+pysqlite:///D:/tmp/lifeos.sqlite3"; alembic upgrade head
 ```
 
-`migrations/env.py` 的 URL 解析顺序：代码内调用传入的 `config.attributes["lifeos_url"]` → `-x url=` →
-`LIFEOS_DATABASE_URL` → `lifeos.config.settings.get_settings()`（D 的模块可导入时）→
-`%LOCALAPPDATA%\LifeOS\data\lifeos.sqlite3`。
-这样当前即可迁移，D 合并后会自动跟随配置的数据目录，无需改动 `env.py`。
+`migrations/env.py` 的解析顺序：代码内调用传入的 `config.attributes["lifeos_url"]` →
+`-x url=` → `lifeos.config.settings.get_settings()`。
+
+**配置无法读取时直接报 `MigrationTargetError` 并终止，不再回退到默认路径**；
+迁移与应用共用 `resolve_target(settings)`，因此两者解析到的始终是同一个文件。
 
 ## 测试与验证结果
 
 环境：Windows，Python 3.12.6，SQLAlchemy 2.1.6，Alembic 1.20.1，pytest 9.2.0，ruff 0.17.3。
 
 ```
-python -m pytest -q -o pythonpath=src   ->  57 passed
+python -m pytest -q -o pythonpath=src   ->  65 passed
 python -m ruff check .                  ->  All checks passed!
 python -m ruff format --check .         ->  36 files already formatted
 ```
 
-57 项 = C 的 39 项（数据库 17、安装/打包 11、迁移演进 4、Settings 契约 7）
+65 项 = C 的 47 项（数据库 17、安装/打包 11、迁移演进 4、Settings 契约 7、迁移目标 8）
 + A 原有集成 3 项 + D 的 15 项（配置、日志、AI Provider）。
 
 ### 与 D 的合并与联调（2026-11-03）

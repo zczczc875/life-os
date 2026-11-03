@@ -98,6 +98,9 @@ def upgrade_to_head(target: DatabaseTarget) -> str:
 
     Safe to call on every startup: Alembic skips revisions that are already
     applied, so an up-to-date database is left untouched.
+
+    The caller's ``target`` is authoritative and is handed to Alembic directly,
+    so the migrated file is always the file the application opens.
     """
     from alembic import command
     from alembic.runtime.migration import MigrationContext
@@ -119,5 +122,11 @@ def upgrade_to_head(target: DatabaseTarget) -> str:
     finally:
         engine.dispose()
 
-    _logger.info("database schema upgraded to %s", revision)
-    return revision or ""
+    if not revision:
+        raise MigrationError(
+            f"migration reported no revision for {target.describe()}; "
+            "the schema may have been applied to a different database"
+        )
+
+    _logger.info("database schema upgraded to %s at %s", revision, target.describe())
+    return revision

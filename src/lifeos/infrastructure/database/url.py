@@ -21,6 +21,7 @@ __all__ = [
     "DEFAULT_DATABASE_FILENAME",
     "SQLITE_DRIVER",
     "DatabaseTarget",
+    "MigrationTargetError",
     "UnresolvedDatabaseError",
     "is_frozen",
     "resolve_target",
@@ -35,6 +36,15 @@ SQLITE_DRIVER = "sqlite+pysqlite"
 
 class UnresolvedDatabaseError(ValueError):
     """Raised when settings do not describe any database location."""
+
+
+class MigrationTargetError(RuntimeError):
+    """Raised when a migration cannot determine a trustworthy target.
+
+    Raised instead of guessing a location, so a broken configuration never
+    results in a schema being written into a database the application will not
+    open.
+    """
 
 
 def is_frozen() -> bool:
@@ -142,5 +152,11 @@ def target_from_url(url: str) -> DatabaseTarget:
 
 
 def default_target() -> DatabaseTarget:
-    """Return the target used when no settings are available."""
+    """Return the location used when no configuration is supplied.
+
+    This documents the built-in default and is used to assert it. Production
+    code paths resolve from ``Settings`` instead; migrations must never fall
+    back here, because writing a schema to a guessed location hides a broken
+    configuration until the application fails with "no such table".
+    """
     return DatabaseTarget(_default_data_dir() / DEFAULT_DATABASE_FILENAME)
