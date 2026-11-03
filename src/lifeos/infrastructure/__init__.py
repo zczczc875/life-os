@@ -1,1 +1,1 @@
-"""Infrastructure packages; importing this module performs no side effects."""
+"""Infrastructure layer: database, logging and other runtime services."""

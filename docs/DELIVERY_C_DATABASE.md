@@ -25,6 +25,7 @@
 | `tests/test_database.py` | 17 项数据库测试，全部使用临时库 |
 | `tests/test_packaging.py` | 11 项安装 / 打包行为测试 |
 | `tests/test_migrations.py` | 4 项迁移演进测试（叠加、回滚、模型漂移、残留守卫） |
+| `tests/test_settings_contract.py` | 7 项与 D 真实 `Settings` 的契约联调测试 |
 
 ## 接口实现情况
 
@@ -36,7 +37,15 @@
 - 额外提供 `engine`、`path`、`url`、`session()`、`session_scope()`，供集成和其他模块按需使用。
 - 额外提供 `is_migrated() -> bool`（见下方遗留问题 3），用于区分「连得上」和「可用」。
 
-### 对 Settings 的依赖（需 D / A 确认）
+### 对 Settings 的依赖（已与 D 的实现联调验证）
+
+D 的 `config/settings.py` 已合入主干（PR !1）。已用**真实 `Settings` 对象**而非测试替身验证，契约吻合：
+
+| C 的要求 | D 的实现 | 结果 |
+| --- | --- | --- |
+| `app_version: str` | `app_version: str = "0.1.0"` | 一致 |
+| `data_dir: Path` | `data_dir: Path`，默认 `%LOCALAPPDATA%\LifeOS\data` | 一致 |
+| 数据目录可覆盖 | `LIFEOS_DATA_DIR` 环境变量 | 已验证贯通到数据库与迁移 |
 
 `settings` 只按属性读取，当前支持三种形态，优先级从高到低：
 
@@ -44,8 +53,12 @@
 2. `settings.data_dir` + `settings.database_filename`。
 3. `settings.data_dir` + 默认文件名 `lifeos.sqlite3`。
 
-即 **只要 D 的 `Settings` 提供 `data_dir`，就可直接工作**；`database_filename` / `database_path` 为可选覆盖项。
-`docs/DATA_MODEL.md` 中「数据库文件名由 C、D 与 A 协商」一项，C 方提议取 **`lifeos.sqlite3`**，待 A 确认后写入文档。
+D 的 `Settings` 未定义 `database_path` / `database_filename`，属**可选覆盖项**，缺失时自动走第 3 条，
+已有测试覆盖该情形。`docs/DATA_MODEL.md` 中「数据库文件名由 C、D 与 A 协商」一项，C 方提议取
+**`lifeos.sqlite3`**，待 A 确认后写入文档。
+
+注意：`get_settings()` 带 `lru_cache`。同进程内先调用过它再改环境变量时，需 `get_settings.cache_clear()`
+才会生效；命令行迁移在独立进程中执行，不受影响。已有测试固化该行为。
 
 ## 对照 C 的完成标准逐条验收
 
@@ -152,12 +165,26 @@ $env:LIFEOS_DATABASE_URL = "sqlite+pysqlite:///D:/tmp/lifeos.sqlite3"; alembic u
 环境：Windows，Python 3.12.6，SQLAlchemy 2.1.6，Alembic 1.20.1，pytest 9.2.0，ruff 0.17.3。
 
 ```
-python -m pytest -q -o pythonpath=src   ->  35 passed
+python -m pytest -q -o pythonpath=src   ->  57 passed
 python -m ruff check .                  ->  All checks passed!
-python -m ruff format --check .         ->  25 files already formatted
+python -m ruff format --check .         ->  36 files already formatted
 ```
 
-35 项 = A 原有集成 3 项 + 数据库 17 项 + 安装/打包 11 项 + 迁移演进 4 项。补充的手工验证：
+57 项 = C 的 39 项（数据库 17、安装/打包 11、迁移演进 4、Settings 契约 7）
++ A 原有集成 3 项 + D 的 15 项（配置、日志、AI Provider）。
+
+### 与 D 的合并与联调（2026-11-03）
+
+已将主干 `feat/phase1-architecture`（含 D 的 PR !1）合入本分支：
+
+- **冲突**：仅 `src/lifeos/infrastructure/__init__.py` 一处（双方都新建了该包声明）。
+  已采用 D 的版本（描述更完整，且属先合并方），C 无实质损失。
+- **全量测试**：合并后 57 项全部通过，C 与 D 的测试无相互干扰。
+- **启动顺序联调**：按 `app.py` 的顺序串联「配置 → 日志 → 数据库 → 连接状态 → dispose」，
+  实际生成了日志文件与数据库文件，流程贯通（窗口部分待 B）。
+- `pyproject.toml` 已由 A 声明 `pydantic-settings`，无需改动。
+
+补充的手工验证：
 
 - **模拟 exe 首次启动**：数据目录完全不存在的情况下，`create_database` → `ensure_schema()` 自动建表成功，
   写入设置后用原生 `sqlite3` 直读文件确认落盘（20480 bytes）；第二次启动 `ensure_schema()` 为空操作且数据保留。
@@ -180,7 +207,7 @@ python -m ruff format --check .         ->  25 files already formatted
 ## 遗留问题与待协调（责任人）
 
 1. **数据库文件名确认**（A + D）：C 提议 `lifeos.sqlite3`，需 A 更新 `docs/DATA_MODEL.md`。
-2. **Settings 字段确认**（D）：需确认 `Settings` 确实提供 `data_dir: Path`；若字段改名，C 需同步调整。
+2. **Settings 字段确认**（D）：已联调验证，`data_dir: Path` 与 `app_version: str` 均符合约定，无需调整。
 3. **入口需增加一次 `ensure_schema()` 调用 —— 需 A 配合，影响安装版可用性**：
    按架构文档约定，`create_database` 不跑迁移。但目标形态是分发 exe 给用户，用户没有命令行，
    因此必须由程序自己建表。实测确认：全新未迁移的数据库 `check_connection()` 返回 `True`
@@ -201,7 +228,8 @@ python -m ruff format --check .         ->  25 files already formatted
    若 A 倾向另一种方案（如启动时提示用户而非自动迁移），C 无需改动模块内部即可配合。
 4. **连接检查耗时**（A + B）：本地 SQLite 的 `check_connection()` 为毫秒级，暂不需要非阻塞方案；若后续数据量变大再评估。
 5. `pyproject.toml` 未声明 `pytest` 的 `pythonpath`，故测试需 `-o pythonpath=src` 或先 `pip install -e .`；是否固化由 A 决定（属 A 的所有权文件，C 未改）。
-6. 未验证真实 UI 联调与 `python -m lifeos` 端到端启动，因 B、D 模块尚未提供。
+6. 未验证真实 UI 联调与 `python -m lifeos` 端到端启动，因 B 的模块尚未提供。
+   D 的配置与日志已合并并联调通过。
 7. **打包配置尚未实际验证**（A / 负责打包的人）：`find_migrations_dir()` 的 frozen 分支是用
    `monkeypatch` 模拟 `sys.frozen` / `sys._MEIPASS` 测试的，**没有真正跑过 PyInstaller 打包**。
    真正出包时需确认 `--add-data "migrations;migrations"` 生效，并在干净的 Windows 机器上
