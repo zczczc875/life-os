@@ -4,6 +4,7 @@ import sys
 from types import ModuleType, SimpleNamespace
 
 import pytest
+import sqlalchemy
 
 from lifeos.app import main
 
@@ -20,6 +21,8 @@ def test_startup_order_and_status(monkeypatch, connected):
     settings = SimpleNamespace(app_version="test-version")
 
     class Database:
+        engine = object()
+
         def check_connection(self):
             calls.append("check")
             return connected
@@ -40,8 +43,9 @@ def test_startup_order_and_status(monkeypatch, connected):
             return 0
 
     class Window:
-        def __init__(self, version, status):
+        def __init__(self, version, status, *, task_service):
             assert (version, status) == ("test-version", connected)
+            assert (task_service is not None) is connected
             calls.append("window")
 
         def show(self):
@@ -60,10 +64,17 @@ def test_startup_order_and_status(monkeypatch, connected):
         calls.append("database")
         return Database()
 
-    _install(monkeypatch, "PySide6.QtWidgets", QApplication=Application)
+    class Inspector:
+        def has_table(self, name):
+            assert name == "tasks"
+            return True
+
+    monkeypatch.setattr(sqlalchemy, "inspect", lambda engine: Inspector())
+    _install(monkeypatch, "PySide6.QtWidgets", QApplication=Application, QMessageBox=object)
     _install(monkeypatch, "lifeos.config.settings", get_settings=get_settings)
     _install(monkeypatch, "lifeos.infrastructure.database.engine", create_database=create_database)
     _install(monkeypatch, "lifeos.infrastructure.logging.setup", setup_logging=setup_logging)
+    _install(monkeypatch, "lifeos.tasks", TaskService=lambda database: object())
     _install(monkeypatch, "lifeos.ui.main_window", MainWindow=Window)
 
     assert main() == 0
@@ -90,14 +101,47 @@ def test_disposes_database_on_connection_error(monkeypatch):
         def dispose(self):
             calls.append("dispose")
 
-    _install(monkeypatch, "PySide6.QtWidgets", QApplication=object)
+    _install(monkeypatch, "PySide6.QtWidgets", QApplication=object, QMessageBox=object)
     _install(monkeypatch, "lifeos.config.settings", get_settings=lambda: object())
     _install(
         monkeypatch, "lifeos.infrastructure.database.engine", create_database=lambda _: Database()
     )
     _install(monkeypatch, "lifeos.infrastructure.logging.setup", setup_logging=lambda _: None)
+    _install(monkeypatch, "lifeos.tasks", TaskService=object)
     _install(monkeypatch, "lifeos.ui.main_window", MainWindow=object)
 
     with pytest.raises(RuntimeError, match="unexpected error"):
         main()
     assert calls == ["dispose"]
+
+
+def test_unmigrated_database_prompts_and_disables_tasks(qapp, monkeypatch, tmp_path):
+    from PySide6.QtWidgets import QApplication, QMessageBox
+
+    from lifeos.config import settings as settings_module
+    from lifeos.infrastructure.logging import setup as logging_module
+    from lifeos.ui import main_window
+
+    notices = []
+    windows = []
+    original_window = main_window.MainWindow
+
+    def capture_window(*args, **kwargs):
+        window = original_window(*args, **kwargs)
+        windows.append(window)
+        return window
+
+    monkeypatch.setattr(
+        settings_module, "get_settings", lambda: settings_module.Settings(data_dir=tmp_path)
+    )
+    monkeypatch.setattr(logging_module, "setup_logging", lambda settings: None)
+    monkeypatch.setattr(QMessageBox, "warning", lambda *args: notices.append(args))
+    monkeypatch.setattr(QApplication, "exec", lambda *args: 0)
+    monkeypatch.setattr(main_window, "MainWindow", capture_window)
+
+    assert main() == 0
+    assert len(notices) == 1
+    assert "alembic upgrade head" in notices[0][2]
+    assert windows[0].database_status()
+    assert not windows[0].task_panel.add_button.isEnabled()
+    windows[0].close()
