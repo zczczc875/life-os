@@ -236,6 +236,9 @@ python -m ruff format --check .         ->  36 files already formatted
 
 ## 遗留问题与待协调（责任人）
 
+> 其中仍未关闭的项（入口调用 `ensure_schema()`、数据库文件名确认、安装包迁移资源）
+> 已连同 Phase 2 事项合并整理在 [`docs/COORDINATION_C.md`](COORDINATION_C.md)。
+
 1. **数据库文件名确认**（A + D）：C 提议 `lifeos.sqlite3`，需 A 更新 `docs/DATA_MODEL.md`。
 2. **Settings 字段确认**（D）：已联调验证，`data_dir: Path` 与 `app_version: str` 均符合约定，无需调整。
 3. **入口需增加一次 `ensure_schema()` 调用 —— 需 A 配合，影响安装版可用性**：

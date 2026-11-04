@@ -4,6 +4,9 @@
 
 ## 范围
 
+> **需 A 确认或配合的事项已集中整理在 [`docs/COORDINATION_C.md`](COORDINATION_C.md)，
+> 其中 4 项标注为阻塞，建议先看该文件。**
+
 按 `docs/PHASE2_TASKS.md` 分工，C 负责「任务表、Repository、Alembic 迁移和独立临时数据库测试」。
 未实现 `lifeos.tasks` 服务层（A 负责），未改动 A、B、D 的任何文件。
 
@@ -221,6 +224,9 @@ UPDATE tasks SET status='completed', completed_at=?
    已改为显式 `close()`，并补充回滚后的二次校验。
 
 ## 遗留问题与待协调
+
+> 本节的 Phase 1 遗留项与 Phase 2 的待确认事项已合并整理在
+> [`docs/COORDINATION_C.md`](COORDINATION_C.md)，含每项的建议方案与阻塞状态。
 
 1. **Repository 接口待 A 确认**：见上方提案，尤其是返回 ORM 对象还是 `Task` 数据对象。
 2. **`mark_completed()` 无法区分「本次完成」与「已被他人完成」**（A + C，需决策）：
