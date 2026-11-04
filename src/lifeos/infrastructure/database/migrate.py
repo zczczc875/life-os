@@ -21,7 +21,7 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
 
     from lifeos.infrastructure.database.url import DatabaseTarget
 
-__all__ = ["MigrationError", "find_migrations_dir", "upgrade_to_head"]
+__all__ = ["MigrationError", "find_migrations_dir", "head_revision", "upgrade_to_head"]
 
 _logger = logging.getLogger(__name__)
 
@@ -91,6 +91,29 @@ def _build_config(target: DatabaseTarget, migrations_dir: Path) -> Config:
     # env.py reads the URL from this attribute, mirroring `alembic -x url=...`.
     config.attributes["lifeos_url"] = target.url_string
     return config
+
+
+def head_revision() -> str:
+    """Return the latest revision defined by the bundled migration scripts.
+
+    Read from the scripts rather than hardcoded, so adding a migration does not
+    require touching the startup check.
+    """
+    from alembic.config import Config
+    from alembic.script import ScriptDirectory
+
+    migrations_dir = find_migrations_dir()
+    config = Config()
+    config.set_main_option("script_location", str(migrations_dir))
+    try:
+        head = ScriptDirectory.from_config(config).get_current_head()
+    except Exception as error:  # re-raised as MigrationError below
+        raise MigrationError(f"cannot read migration scripts in {migrations_dir}: {error}") from (
+            error
+        )
+    if head is None:
+        raise MigrationError(f"no migration revisions found in {migrations_dir}")
+    return head
 
 
 def upgrade_to_head(target: DatabaseTarget) -> str:
