@@ -26,7 +26,6 @@ from sqlalchemy import create_engine, inspect
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session, sessionmaker
 
-from lifeos.infrastructure.database.models import AppSetting
 from lifeos.infrastructure.database.url import (
     DEFAULT_DATABASE_FILENAME,
     UnresolvedDatabaseError,
@@ -109,21 +108,44 @@ class Database:
         return True
 
     def is_migrated(self) -> bool:
-        """Return whether the expected Phase 1 tables exist.
+        """Return whether the database is at the latest migration revision.
 
         ``check_connection`` only proves the file is readable: a freshly created
-        SQLite file connects successfully while holding no tables, so settings
-        access would still fail with "no such table". Use :meth:`ensure_schema`
-        to bring an empty or outdated database up to date.
+        SQLite file connects successfully while holding no tables. Checking the
+        Alembic revision rather than one table's existence also covers a
+        database left on an older revision - such as a Phase 1 database that
+        predates the ``tasks`` table - which would otherwise be reported as
+        migrated and then fail with "no such table".
+
+        Use :meth:`ensure_schema` to bring an empty or outdated database up to
+        date.
         """
+        from lifeos.infrastructure.database.migrate import MigrationError, head_revision
+
         try:
-            return inspect(self._engine).has_table(AppSetting.__tablename__)
+            expected = head_revision()
+        except MigrationError:
+            _logger.warning("cannot determine the expected revision", exc_info=True)
+            return False
+
+        try:
+            return self.current_revision() == expected
         except SQLAlchemyError:
             _logger.warning("migration check failed for %s", self._path, exc_info=True)
             return False
         except OSError:
             _logger.warning("database file is not accessible: %s", self._path, exc_info=True)
             return False
+
+    def current_revision(self) -> str | None:
+        """Return the Alembic revision stored in the database, if any.
+
+        ``None`` means the database has never been migrated.
+        """
+        from alembic.runtime.migration import MigrationContext
+
+        with self._engine.connect() as connection:
+            return MigrationContext.configure(connection).get_current_revision()
 
     def ensure_schema(self) -> str:
         """Apply any pending migrations and return the resulting revision.

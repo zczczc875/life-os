@@ -21,6 +21,7 @@ from sqlalchemy import inspect
 from lifeos.infrastructure.database.engine import create_database
 from lifeos.infrastructure.database.models import Base
 from lifeos.infrastructure.database.repository import SettingsRepository
+from tests._helpers import alembic_config, head_revision
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 VERSIONS_DIR = PROJECT_ROOT / "migrations" / "versions"
@@ -30,7 +31,7 @@ _FOLLOW_UP_REVISION = textwrap.dedent(
     """probe revision used only by the test suite
 
     Revision ID: {revision}
-    Revises: 0001_app_settings
+    Revises: {parent}
     """
     from __future__ import annotations
 
@@ -38,7 +39,7 @@ _FOLLOW_UP_REVISION = textwrap.dedent(
     from alembic import op
 
     revision = "{revision}"
-    down_revision = "0001_app_settings"
+    down_revision = "{parent}"
     branch_labels = None
     depends_on = None
 
@@ -54,30 +55,43 @@ _FOLLOW_UP_REVISION = textwrap.dedent(
     '''
 )
 
+#: Latest published revision; the probe stacks on top of it.
+HEAD_REVISION = head_revision()
+
 
 def _settings(data_dir: Path, **extra: object) -> SimpleNamespace:
     return SimpleNamespace(app_version="test-version", data_dir=data_dir, **extra)
 
 
 @pytest.fixture
-def add_follow_up_revision():
-    """Return a callable that adds a second revision, removed after the test.
+def add_follow_up_revision(tmp_path: Path):
+    """Yield a callable that adds a probe revision inside a temporary copy.
 
-    The revision is written on demand rather than up front: a test must first
-    build a database at ``0001`` to represent an already-installed app, and
-    only then introduce the newer migration.
+    The migrations directory is copied into ``tmp_path`` so the test never
+    writes into the source tree: a crashed run cannot leave a stray revision
+    behind, and parallel runs cannot collide on a fixed filename
+    (``docs/DELIVERY_PHASE1.md`` leftover item 1).
     """
+    import shutil
+
+    scripts = tmp_path / "migrations"
+    shutil.copytree(PROJECT_ROOT / "migrations", scripts)
     revision = "9999_probe_revision"
-    path = VERSIONS_DIR / f"{revision}.py"
 
     def _add() -> str:
-        path.write_text(_FOLLOW_UP_REVISION.format(revision=revision), encoding="utf-8")
+        (scripts / "versions" / f"{revision}.py").write_text(
+            _FOLLOW_UP_REVISION.format(revision=revision, parent=HEAD_REVISION),
+            encoding="utf-8",
+        )
         return revision
 
-    try:
-        yield _add
-    finally:
-        path.unlink(missing_ok=True)
+    _add.script_location = str(scripts)  # type: ignore[attr-defined]
+    yield _add
+
+
+def _config_for(scripts: str, database_path: Path):
+    """Build an Alembic config bound to a temporary scripts directory."""
+    return alembic_config(database_path, script_location=scripts)
 
 
 def _columns(database) -> list[str]:
@@ -86,11 +100,15 @@ def _columns(database) -> list[str]:
 
 def test_a_later_migration_stacks_without_losing_data(tmp_path: Path, add_follow_up_revision):
     """Upgrading an installed app must keep the user's existing settings."""
+    from alembic import command
+
     data_dir = tmp_path / "data"
+    database_file = data_dir / "lifeos.sqlite3"
+    scripts = add_follow_up_revision.script_location
 
     # A user already running the shipped version, with real data.
+    command.upgrade(_config_for(scripts, database_file), "head")
     first = create_database(_settings(data_dir))
-    assert first.ensure_schema() == "0001_app_settings"
     with first.session_scope() as session:
         SettingsRepository(session).set("app.locale", "zh-CN")
     assert "probe_note" not in _columns(first)
@@ -98,13 +116,18 @@ def test_a_later_migration_stacks_without_losing_data(tmp_path: Path, add_follow
 
     # A newer build ships one more migration.
     revision = add_follow_up_revision()
+    command.upgrade(_config_for(scripts, database_file), "head")
 
     upgraded = create_database(_settings(data_dir))
     try:
-        assert upgraded.ensure_schema() == revision
         assert "probe_note" in _columns(upgraded)
         with upgraded.session_scope() as session:
             assert SettingsRepository(session).get("app.locale") == "zh-CN"
+
+        from alembic.migration import MigrationContext
+
+        with upgraded.engine.connect() as connection:
+            assert MigrationContext.configure(connection).get_current_revision() == revision
     finally:
         upgraded.dispose()
 
@@ -112,22 +135,21 @@ def test_a_later_migration_stacks_without_losing_data(tmp_path: Path, add_follow
 def test_the_added_column_can_be_rolled_back(tmp_path: Path, add_follow_up_revision):
     """A bad release must be reversible without destroying stored settings."""
     from alembic import command
-    from alembic.config import Config
 
     add_follow_up_revision()
+    scripts = add_follow_up_revision.script_location
 
     data_dir = tmp_path / "data"
+    database_file = data_dir / "lifeos.sqlite3"
+    command.upgrade(_config_for(scripts, database_file), "head")
+
     database = create_database(_settings(data_dir))
-    database.ensure_schema()
     with database.session_scope() as session:
         SettingsRepository(session).set("keep", "me")
     assert "probe_note" in _columns(database)
     database.dispose()
 
-    config = Config(str(PROJECT_ROOT / "alembic.ini"))
-    config.set_main_option("script_location", str(PROJECT_ROOT / "migrations"))
-    config.attributes["lifeos_url"] = f"sqlite+pysqlite:///{data_dir / 'lifeos.sqlite3'}"
-    command.downgrade(config, "0001_app_settings")
+    command.downgrade(_config_for(scripts, database_file), HEAD_REVISION)
 
     verify = create_database(_settings(data_dir))
     try:
@@ -161,4 +183,18 @@ def test_models_and_migrations_do_not_drift(tmp_path: Path):
 def test_only_reviewed_revisions_are_committed():
     """Guard against a stray probe revision being committed by accident."""
     committed = sorted(path.name for path in VERSIONS_DIR.glob("*.py"))
-    assert committed == ["0001_app_settings.py"]
+    assert committed == ["0001_app_settings.py", "0002_tasks.py"]
+
+
+def test_probe_revisions_never_touch_the_source_tree(tmp_path: Path, add_follow_up_revision):
+    """The probe must live in a temporary copy, not in migrations/versions.
+
+    Covers leftover item 1 in docs/DELIVERY_PHASE1.md: a crashed test run must
+    not be able to leave a stray revision in the repository.
+    """
+    revision = add_follow_up_revision()
+
+    assert not (VERSIONS_DIR / f"{revision}.py").exists()
+    probe = Path(add_follow_up_revision.script_location) / "versions" / f"{revision}.py"
+    assert probe.is_file()
+    assert VERSIONS_DIR not in probe.parents

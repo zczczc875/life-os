@@ -21,6 +21,7 @@ from lifeos.infrastructure.database.engine import (
 )
 from lifeos.infrastructure.database.models import AppSetting, Base
 from lifeos.infrastructure.database.repository import SettingsRepository
+from tests._helpers import head_revision
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
@@ -111,14 +112,29 @@ def test_dispose_is_idempotent(tmp_path: Path):
 
 
 def test_is_migrated_distinguishes_an_empty_file_from_a_migrated_one(tmp_path: Path):
-    """A fresh SQLite file connects fine but has no tables yet."""
+    """A fresh SQLite file connects fine but carries no schema yet."""
     instance = create_database(_settings(tmp_path / "data"))
     try:
         assert instance.check_connection() is True
         assert instance.is_migrated() is False
 
-        Base.metadata.create_all(instance.engine)
+        instance.ensure_schema()
         assert instance.is_migrated() is True
+    finally:
+        instance.dispose()
+
+
+def test_tables_without_a_revision_are_not_considered_migrated(tmp_path: Path):
+    """``create_all`` builds tables but records no Alembic revision.
+
+    That half-migrated state must not be reported as migrated, otherwise a
+    later migration would be skipped and the schema would silently drift.
+    """
+    instance = create_database(_settings(tmp_path / "data"))
+    try:
+        Base.metadata.create_all(instance.engine)
+        assert instance.current_revision() is None
+        assert instance.is_migrated() is False
     finally:
         instance.dispose()
 
@@ -232,7 +248,7 @@ def test_migration_creates_the_expected_schema_on_an_empty_database(tmp_path: Pa
 
         with instance.engine.connect() as connection:
             version = connection.execute(text("SELECT version_num FROM alembic_version")).scalar()
-        assert version == "0001_app_settings"
+        assert version == head_revision()
 
         with instance.session_scope() as session:
             SettingsRepository(session).set("migrated", "yes")

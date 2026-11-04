@@ -18,6 +18,7 @@ from lifeos.config.settings import Settings, get_settings
 from lifeos.infrastructure.database.engine import create_database
 from lifeos.infrastructure.database.repository import SettingsRepository
 from lifeos.infrastructure.database.url import DEFAULT_DATABASE_FILENAME, resolve_target
+from tests._helpers import head_revision
 
 
 def test_real_settings_exposes_the_fields_the_database_needs():
@@ -36,7 +37,7 @@ def test_create_database_accepts_the_real_settings_object(tmp_path: Path):
     database = create_database(settings)
     try:
         assert database.path == settings.data_dir / DEFAULT_DATABASE_FILENAME
-        assert database.ensure_schema() == "0001_app_settings"
+        assert database.ensure_schema() == head_revision()
         assert database.check_connection() is True
 
         with database.session_scope() as session:

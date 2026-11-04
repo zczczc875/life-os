@@ -16,6 +16,7 @@ import pytest
 from lifeos.infrastructure.database.engine import create_database
 from lifeos.infrastructure.database.repository import SettingsRepository
 from lifeos.infrastructure.database.url import DEFAULT_DATABASE_FILENAME
+from tests._helpers import head_revision
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
@@ -39,7 +40,7 @@ def test_ensure_schema_creates_the_schema_on_a_fresh_install(tmp_path: Path):
         assert instance.is_migrated() is False
 
         revision = instance.ensure_schema()
-        assert revision == "0001_app_settings"
+        assert revision == head_revision()
         assert instance.is_migrated() is True
 
         # The store is immediately usable without any manual migration step.
@@ -64,7 +65,7 @@ def test_ensure_schema_is_safe_to_call_on_every_startup(tmp_path: Path):
     second = create_database(_settings(data_dir))
     try:
         # Second startup: ensure_schema runs again and is a no-op.
-        assert second.ensure_schema() == "0001_app_settings"
+        assert second.ensure_schema() == head_revision()
         with second.session_scope() as session:
             assert SettingsRepository(session).get("app.locale") == "zh-CN"
     finally:
@@ -164,7 +165,7 @@ def test_windows_paths_with_spaces_are_handled(tmp_path: Path):
     data_dir = tmp_path / "Local App Data" / "Life OS"
     instance = create_database(_settings(data_dir))
     try:
-        assert instance.ensure_schema() == "0001_app_settings"
+        assert instance.ensure_schema() == head_revision()
         with instance.session_scope() as session:
             SettingsRepository(session).set("spaced", "ok")
         with instance.session_scope() as session:

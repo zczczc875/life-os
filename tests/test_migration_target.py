@@ -28,6 +28,7 @@ from lifeos.infrastructure.database.url import (
     default_target,
     resolve_target,
 )
+from tests._helpers import head_revision
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 ENV_PATH = PROJECT_ROOT / "migrations" / "env.py"
@@ -195,6 +196,6 @@ def test_upgrade_reports_the_revision_it_applied(tmp_path: Path):
     settings = _settings(tmp_path / "data")
     database = create_database(settings)
     try:
-        assert database.ensure_schema() == "0001_app_settings"
+        assert database.ensure_schema() == head_revision()
     finally:
         database.dispose()
