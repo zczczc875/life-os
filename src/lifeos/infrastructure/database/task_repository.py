@@ -107,6 +107,12 @@ class TaskRepository:
         Repeated completion is a no-op that preserves the original
         ``completed_at``. The caller still owns the transaction: this method
         issues the statement but never commits.
+
+        The return value reflects the stored state, not this call's effect: a
+        caller that loses the race still receives the winner's
+        ``completed_at`` and cannot tell the two cases apart. See
+        ``docs/DELIVERY_C_PHASE2.md`` if the service ever needs to distinguish
+        them.
         """
         explicit = to_naive_utc(completed_at)
         moment = utcnow() if explicit is None else explicit

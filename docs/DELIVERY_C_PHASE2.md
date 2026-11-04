@@ -223,7 +223,20 @@ UPDATE tasks SET status='completed', completed_at=?
 ## 遗留问题与待协调
 
 1. **Repository 接口待 A 确认**：见上方提案，尤其是返回 ORM 对象还是 `Task` 数据对象。
-2. **安装包迁移资源**（C / A，Phase 1 遗留）：wheel 产物仍未包含 `migrations/`，
+2. **`mark_completed()` 无法区分「本次完成」与「已被他人完成」**（A + C，需决策）：
+   修复后该方法返回的是数据库真实状态，而非调用方传入的时间。并发场景下，
+   后执行的那次调用会拿到**首次**的 `completed_at`，但返回值本身看不出自己是否是胜者。
+
+   当前对 `TaskService.complete_task` 无影响——文档要求「重复完成已完成任务应成功且保留原完成时间」，
+   现有行为正好满足。但若 A 之后需要区分（例如 UI 想提示「该任务已被完成」），
+   则需扩展返回值，例如：
+
+   ```python
+   def mark_completed(...) -> tuple[TaskRecord | None, bool]: ...   # (记录, 是否本次完成)
+   ```
+
+   这会**改动公共接口**，因此本次未擅自实施。请 A 确认是否需要。
+3. **安装包迁移资源**（C / A，Phase 1 遗留）：wheel 产物仍未包含 `migrations/`，
    本次未处理，需与打包方式一并决定。
-3. **`tests/test_end_to_end.py` 未在本地验证**：见上方说明，需 A 在常规环境复核。
-4. 未验证真实 UI 联调，B 的任务界面尚未提供。
+4. **`tests/test_end_to_end.py` 未在本地验证**：见上方说明，需 A 在常规环境复核。
+5. 未验证真实 UI 联调，B 的任务界面尚未提供。
