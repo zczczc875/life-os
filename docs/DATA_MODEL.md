@@ -2,7 +2,7 @@
 
 ## 存储边界
 
-正式数据默认存放于 `%LOCALAPPDATA%\LifeOS\data\` 下的 SQLite 数据库，具体路径由 Settings 提供并允许覆盖。测试使用临时目录和独立数据库。数据库模块负责 Engine、Session、连接检查与 Repository；UI 不直接访问数据库。
+正式数据默认存放于 `%LOCALAPPDATA%\LifeOS\data\lifeos.sqlite3`，数据目录由 Settings 提供并允许覆盖。测试使用临时目录和独立数据库。数据库模块负责 Engine、Session、连接检查与 Repository；UI 不直接访问数据库。
 
 ## 基础设置
 

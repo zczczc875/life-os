@@ -1,4 +1,4 @@
-# LifeOS Phase 1
+# LifeOS
 
 Windows 本地优先桌面工程。界面、数据库、配置、日志和 AI Mock 已合入架构分支；接口仍待 B、C、D 共同确认。验收结果和待解决问题见 [集成记录](docs/INTEGRATION.md)。
 
@@ -14,7 +14,7 @@ python -m pip install -e ".[dev]"
 
 首次启动前先执行下方数据库迁移，再使用 `python -m lifeos` 启动。启动顺序和接口契约见 [架构文档](docs/ARCHITECTURE.md)。SQLite 默认目录为 `%LOCALAPPDATA%\LifeOS\data\`；安装包或导入模块时不应创建数据。
 
-Phase 2 的任务面板支持添加任务、查看列表并标记完成。首次使用或更新代码后须先迁移至最新版本；任务表缺失时应用会提示迁移。并发完成时间覆盖问题仍待 C 修复，详见 [Phase 2 协作说明](docs/PHASE2_TASKS.md)。
+Phase 2 的任务面板支持添加任务、查看列表并标记完成。首次使用或更新代码后须先迁移至最新版本；任务表缺失时应用会提示迁移。并发完成时间覆盖问题已修复并复测，详见 [Phase 2 交付记录](docs/DELIVERY_PHASE2.md)。
 
 ## 迁移与测试
 
@@ -26,4 +26,4 @@ ruff check .
 ruff format --check .
 ```
 
-当前测试覆盖模块、迁移及真实组件的隔离联调；仍需完成实际使用环境验收。详见 [验收记录](docs/INTEGRATION.md)。
+测试覆盖模块、迁移及真实组件的隔离联调；Phase 1 和 Phase 2 结果分别见 [第一阶段记录](docs/INTEGRATION.md)与 [第二阶段记录](docs/DELIVERY_PHASE2.md)。
