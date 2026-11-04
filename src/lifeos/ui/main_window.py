@@ -1,4 +1,9 @@
-"""LifeOS main window: presentation only, no database or AI access."""
+"""LifeOS main window: presentation only, no database or AI access.
+
+The window renders what it is given. Task interactions are delegated to the
+injected :class:`~lifeos.ui.task_panel.TaskService`, so this module never talks
+to the database directly.
+"""
 
 from __future__ import annotations
 
@@ -6,23 +11,31 @@ from PySide6.QtCore import Qt
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import QLabel, QMainWindow, QVBoxLayout, QWidget
 
+from lifeos.ui.task_panel import TaskPanel, TaskService
+
 APP_NAME = "LifeOS"
 WELCOME_TEXT = "欢迎使用 LifeOS，从今天开始整理你的生活。"
 CONNECTED_TEXT = "数据库状态：已连接"
 DISCONNECTED_TEXT = "数据库状态：未连接"
+TASKS_HEADING = "我的任务"
 
 
 class MainWindow(QMainWindow):
     """Show the application name, version, welcome text and connection status."""
 
-    def __init__(self, app_version: str, database_status: bool) -> None:
+    def __init__(
+        self,
+        app_version: str,
+        database_status: bool,
+        task_service: TaskService | None = None,
+    ) -> None:
         super().__init__()
         self._app_version = app_version
         self._database_status = bool(database_status)
 
         self.setWindowTitle(f"{APP_NAME} {app_version}")
-        self.resize(520, 320)
-        self.setMinimumSize(420, 260)
+        self.resize(560, 640)
+        self.setMinimumSize(460, 420)
 
         self.title_label = self._build_label("titleLabel", APP_NAME)
         title_font = QFont(self.title_label.font())
@@ -34,13 +47,24 @@ class MainWindow(QMainWindow):
         self.welcome_label = self._build_label("welcomeLabel", WELCOME_TEXT)
         self.welcome_label.setWordWrap(True)
         self.status_label = self._build_label("statusLabel", "")
+        self.tasks_heading_label = self._build_label("tasksHeadingLabel", TASKS_HEADING)
+        heading_font = QFont(self.tasks_heading_label.font())
+        heading_font.setBold(True)
+        self.tasks_heading_label.setFont(heading_font)
+
+        self.task_panel = TaskPanel(task_service, self)
 
         layout = QVBoxLayout()
         layout.setContentsMargins(32, 28, 32, 28)
         layout.setSpacing(14)
-        for label in (self.title_label, self.version_label, self.welcome_label):
+        for label in (
+            self.title_label,
+            self.version_label,
+            self.welcome_label,
+            self.tasks_heading_label,
+        ):
             layout.addWidget(label)
-        layout.addStretch(1)
+        layout.addWidget(self.task_panel, 1)
         layout.addWidget(self.status_label)
 
         central_widget = QWidget(self)

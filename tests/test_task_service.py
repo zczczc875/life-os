@@ -1,0 +1,99 @@
+"""Contract tests for the application task service using isolated SQLite."""
+
+from datetime import UTC, datetime
+
+import pytest
+from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.orm import Session
+
+from lifeos.config.settings import Settings
+from lifeos.infrastructure.database.engine import create_database
+from lifeos.infrastructure.database.models import TaskRecord
+from lifeos.tasks import (
+    TaskNotFoundError,
+    TaskService,
+    TaskStorageError,
+    TaskValidationError,
+)
+
+
+@pytest.fixture
+def database(tmp_path):
+    db = create_database(Settings(data_dir=tmp_path))
+    db.ensure_schema()
+    yield db
+    db.dispose()
+
+
+def test_create_trims_and_persists_detached_task(database):
+    service = TaskService(database)
+    task = service.create_task("  Plan coursework  ")
+    assert task.title == "Plan coursework"
+    assert task.status == "pending"
+    assert task.id
+    assert task.created_at.tzinfo == UTC
+    assert task.completed_at is None
+    assert service.list_tasks() == [task]
+
+
+@pytest.mark.parametrize("title", ["", " \t\n "])
+def test_blank_title_does_not_create_task(database, title):
+    service = TaskService(database)
+    with pytest.raises(TaskValidationError):
+        service.create_task(title)
+    assert service.list_tasks() == []
+
+
+def test_list_newest_first_with_deterministic_id_tiebreak(database):
+    with database.session_scope() as session:
+        for task_id, created in (
+            ("z", datetime(2026, 1, 2)),
+            ("a", datetime(2026, 1, 2)),
+            ("old", datetime(2026, 1, 1)),
+        ):
+            session.add(TaskRecord(id=task_id, title=task_id, status="pending", created_at=created))
+    tasks = TaskService(database).list_tasks()
+    assert [task.id for task in tasks] == ["a", "z", "old"]
+    assert all(task.created_at.tzinfo == UTC for task in tasks)
+
+
+def test_complete_preserves_first_timestamp_on_repeat(database):
+    service = TaskService(database)
+    created = service.create_task("Task")
+    first = service.complete_task(created.id)
+    second = service.complete_task(created.id)
+    assert first.status == second.status == "completed"
+    assert first.completed_at is not None and first.completed_at.tzinfo == UTC
+    assert second.completed_at == first.completed_at
+    assert service.list_tasks() == [second]
+
+
+def test_complete_missing_task_raises_and_leaves_store_unchanged(database):
+    service = TaskService(database)
+    with pytest.raises(TaskNotFoundError):
+        service.complete_task("does-not-exist")
+    assert service.list_tasks() == []
+
+
+def test_commit_failure_is_translated_and_rolls_back(database, monkeypatch):
+    service = TaskService(database)
+
+    def fail_commit(_session):
+        raise SQLAlchemyError("simulated commit failure")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(Session, "commit", fail_commit)
+        with pytest.raises(TaskStorageError) as caught:
+            service.create_task("Must not persist")
+    assert isinstance(caught.value.__cause__, SQLAlchemyError)
+    assert service.list_tasks() == []
+
+
+def test_missing_task_schema_reports_migration_and_creates_no_schema(tmp_path):
+    db = create_database(Settings(data_dir=tmp_path))
+    try:
+        with pytest.raises(TaskStorageError, match="迁移"):
+            TaskService(db).list_tasks()
+        assert not db.is_migrated()
+    finally:
+        db.dispose()

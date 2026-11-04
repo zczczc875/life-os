@@ -36,7 +36,8 @@ def timed_exec(app):
     def check_window():
         windows = app.topLevelWidgets()
         good = any(w.isVisible() and w.windowTitle().startswith('LifeOS')
-                   and w.database_status() for w in windows)
+                   and w.database_status() and w.task_panel.add_button.isEnabled()
+                   for w in windows)
         app.exit(0 if good else 2)
     QTimer.singleShot(100, check_window)
     return original_exec()
