@@ -17,7 +17,7 @@ import datetime as _datetime
 import uuid
 from typing import TYPE_CHECKING
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 
 from lifeos.infrastructure.database.models import (
     TASK_STATUS_COMPLETED,
@@ -98,22 +98,40 @@ class TaskRepository:
     ) -> TaskRecord | None:
         """Mark a task completed and return it, or ``None`` when absent.
 
-        Completing an already completed task is a no-op that keeps the original
-        ``completed_at``: repeated completion, including a concurrent retry,
-        must not move the recorded time.
+        Completion is performed by a single conditional ``UPDATE`` guarded by
+        ``status = 'pending'``, so the database itself decides the winner when
+        two sessions complete the same task. Reading the row first and then
+        writing would let a session holding a stale ``pending`` snapshot
+        overwrite a completion another session already committed.
+
+        Repeated completion is a no-op that preserves the original
+        ``completed_at``. The caller still owns the transaction: this method
+        issues the statement but never commits.
         """
-        record = self._session.get(TaskRecord, task_id)
-        if record is None:
-            return None
-
-        if record.status == TASK_STATUS_COMPLETED and record.completed_at is not None:
-            return record
-
-        record.status = TASK_STATUS_COMPLETED
         explicit = to_naive_utc(completed_at)
-        record.completed_at = utcnow() if explicit is None else explicit
-        self._session.flush()
-        return record
+        moment = utcnow() if explicit is None else explicit
+
+        statement = (
+            update(TaskRecord)
+            .where(
+                TaskRecord.id == task_id,
+                TaskRecord.status == TASK_STATUS_PENDING,
+            )
+            .values(status=TASK_STATUS_COMPLETED, completed_at=moment)
+        )
+        self._session.execute(statement)
+
+        # This session may hold a stale ``pending`` copy of a row another
+        # session has already completed, so re-read it from the database.
+        # Only the affected row is expired: the caller's other objects in this
+        # session must not be invalidated as a side effect.
+        cached = self._session.identity_map.get(self._session.identity_key(TaskRecord, task_id))
+        if cached is not None:
+            self._session.expire(cached)
+
+        # A missing task and an already-completed one are distinguished here;
+        # the re-read also yields the stored completion time rather than ours.
+        return self._session.get(TaskRecord, task_id)
 
     def count(self) -> int:
         """Return the number of stored tasks."""
