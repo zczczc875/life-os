@@ -229,31 +229,84 @@ def test_repeated_completion_keeps_the_original_time(database):
 
 
 def test_concurrent_repeated_completion_keeps_the_first_time(database):
-    """Two sessions completing the same task must agree on the first time."""
+    """Two sessions that both read a pending task must agree on the first time.
+
+    This is the regression test for the lost-update bug: session B held a stale
+    ``pending`` snapshot, so a read-then-write implementation let it overwrite
+    the completion session A had already committed.
+
+    Each session commits before the next one writes, because SQLite allows only
+    one writer at a time; the race being covered is the stale *read*, which
+    survives the commit ordering.
+    """
     with database.session_scope() as session:
         task_id = TaskRepository(session).add("race").id
 
     first_time = dt.datetime(2026, 7, 1, 10, 0, 0, tzinfo=dt.UTC)
-    with database.session_scope() as session:
-        TaskRepository(session).mark_completed(task_id, completed_at=first_time)
+    later_time = dt.datetime(2026, 9, 9, 20, 0, 0, tzinfo=dt.UTC)
 
     session_a = database.session()
     session_b = database.session()
     try:
-        TaskRepository(session_a).mark_completed(
-            task_id, completed_at=dt.datetime(2026, 8, 1, tzinfo=dt.UTC)
-        )
-        TaskRepository(session_b).mark_completed(
-            task_id, completed_at=dt.datetime(2026, 9, 1, tzinfo=dt.UTC)
-        )
+        repository_a = TaskRepository(session_a)
+        repository_b = TaskRepository(session_b)
+
+        # Both sessions observe the task while it is still pending, and B keeps
+        # a reference so its snapshot stays loaded rather than being refreshed
+        # by chance when another session commits.
+        assert repository_a.get(task_id).status == TASK_STATUS_PENDING
+        stale_copy = repository_b.get(task_id)
+        assert stale_copy.status == TASK_STATUS_PENDING
+
+        winner = repository_a.mark_completed(task_id, completed_at=first_time)
         session_a.commit()
+        assert as_utc(winner.completed_at) == first_time
+
+        # B still holds a pending snapshot, but must not move the time.
+        assert stale_copy.status == TASK_STATUS_PENDING, "precondition: B's copy is stale"
+        loser = repository_b.mark_completed(task_id, completed_at=later_time)
         session_b.commit()
+        assert as_utc(loser.completed_at) == first_time, "B overwrote A's completion"
     finally:
         session_a.close()
         session_b.close()
 
     with database.session_scope() as session:
         assert as_utc(TaskRepository(session).get(task_id).completed_at) == first_time
+
+
+def test_a_stale_pending_snapshot_cannot_overwrite_a_completion(database):
+    """The guard must live in the UPDATE, not in a prior read.
+
+    The object is loaded, then completed through another session, and only
+    afterwards completed through the session holding the stale copy.
+    """
+    with database.session_scope() as session:
+        task_id = TaskRepository(session).add("stale").id
+
+    stale_session = database.session()
+    try:
+        stale_repository = TaskRepository(stale_session)
+        stale_copy = stale_repository.get(task_id)
+        assert stale_copy.status == TASK_STATUS_PENDING
+
+        authoritative = dt.datetime(2026, 2, 2, 2, 0, 0, tzinfo=dt.UTC)
+        with database.session_scope() as other:
+            TaskRepository(other).mark_completed(task_id, completed_at=authoritative)
+
+        result = stale_repository.mark_completed(
+            task_id, completed_at=dt.datetime(2026, 12, 31, tzinfo=dt.UTC)
+        )
+        stale_session.commit()
+
+        assert result.status == TASK_STATUS_COMPLETED
+        assert as_utc(result.completed_at) == authoritative
+    finally:
+        stale_session.close()
+
+    with database.session_scope() as session:
+        stored = TaskRepository(session).get(task_id)
+        assert as_utc(stored.completed_at) == dt.datetime(2026, 2, 2, 2, 0, 0, tzinfo=dt.UTC)
 
 
 def test_mark_completed_returns_none_for_a_missing_task(database):
@@ -353,12 +406,27 @@ def test_repository_does_not_commit_on_its_own(database):
     session = database.session()
     try:
         TaskRepository(session).add("uncommitted")
+        TaskRepository(session).mark_completed("missing-id")
+
         # Read through a separate connection: nothing may be visible yet.
-        with sqlite3.connect(database.path) as probe:
+        # ``sqlite3.connect`` is closed explicitly - its context manager only
+        # manages a transaction, so a ``with`` block would leave the
+        # connection open and hold a lock.
+        probe = sqlite3.connect(str(database.path))
+        try:
             assert probe.execute("SELECT count(*) FROM tasks").fetchone()[0] == 0
+        finally:
+            probe.close()
+
         session.rollback()
     finally:
         session.close()
+
+    probe = sqlite3.connect(str(database.path))
+    try:
+        assert probe.execute("SELECT count(*) FROM tasks").fetchone()[0] == 0
+    finally:
+        probe.close()
 
     with database.session_scope() as session:
         assert TaskRepository(session).count() == 0

@@ -4,6 +4,9 @@
 
 ## 范围
 
+> **需 A 确认或配合的事项已集中整理在 [`docs/COORDINATION_C.md`](COORDINATION_C.md)，
+> 其中 4 项标注为阻塞，建议先看该文件。**
+
 按 `docs/PHASE2_TASKS.md` 分工，C 负责「任务表、Repository、Alembic 迁移和独立临时数据库测试」。
 未实现 `lifeos.tasks` 服务层（A 负责），未改动 A、B、D 的任何文件。
 
@@ -15,7 +18,7 @@
 | `src/lifeos/infrastructure/database/task_repository.py` | `TaskRepository` 与 `TaskTitleError`（新增） |
 | `src/lifeos/infrastructure/database/__init__.py` | 导出任务相关名称（修改） |
 | `migrations/versions/0002_tasks.py` | 新增迁移，建 / 删 `tasks` 表（新增） |
-| `tests/test_task_repository.py` | 28 项任务持久化测试（新增） |
+| `tests/test_task_repository.py` | 29 项任务持久化测试（新增） |
 | `tests/_helpers.py` | 测试共享工具，避免硬编码 head 版本（新增） |
 | `tests/test_migration_state.py` | 4 项迁移状态检测测试（新增） |
 | `src/lifeos/infrastructure/database/engine.py` | `is_migrated()` 改判 revision；新增 `current_revision()`（修改） |
@@ -105,22 +108,24 @@ CREATE INDEX ix_tasks_created_at_id ON tasks (created_at DESC, id);
 
 - **标题裁剪**：`add()` 去首尾空白，结果为空抛 `TaskTitleError`（继承 `ValueError`）。
   已测 `""`、空格、制表换行、全角空格 `\u3000` 四种情况，均不写库。
-- **重复完成保留原时间**：`mark_completed()` 若任务已是 `completed` 且有完成时间，直接返回不改动。
-  已测连续两次完成（传入不同时间）、以及两个 Session 并发完成，`completed_at` 均保持首次值。
-- **显式迁移**：未实现任何自动建表。`Database.is_migrated()` 可用于检测缺表，
-  但它目前只检查 `app_settings`——**见下方遗留问题 1**。
+- **重复完成保留原时间**：`mark_completed()` 通过**带条件的单条 `UPDATE`**（`WHERE status = 'pending'`）
+  完成，由数据库裁定竞态胜者。已测连续两次完成、以及两个 Session 先读后写的并发完成，
+  `completed_at` 均保持首次值。详见下方「并发完成的丢失更新修复」。
+- **显式迁移**：未实现任何自动建表。`Database.is_migrated()` 通过比对 Alembic revision
+  检测数据库是否为最新，缺表或版本落后均返回 `False`。
 
 ## 测试与验证结果
 
 环境：Windows，Python 3.12.6，SQLAlchemy 2.1.6，Alembic 1.20.1，pytest 9.2.0，ruff 0.17.3。
 
 ```
-python -m pytest -q -o pythonpath=src --ignore=tests/test_end_to_end.py  ->  110 passed
+python -m pytest -q -o pythonpath=src --ignore=tests/test_end_to_end.py  ->  111 passed
 python -m ruff check .                                                   ->  All checks passed!
 python -m ruff format --check .                                          ->  48 files already formatted
 ```
 
-110 项 = C 的 Phase 1 部分 47 项 + 任务持久化 28 项 + 迁移测试 6 项 + 迁移状态 4 项 + A、B、D 的既有测试。
+111 项 = C 的 Phase 1 部分 47 项 + 任务持久化 29 项 + 迁移测试 6 项 + 迁移状态 4 项 + A、B、D 的既有测试。
+数据库相关测试单独运行：82 passed。
 
 **`tests/test_end_to_end.py` 被排除**：A 的这个测试通过 `subprocess` 启动 Python 子进程，
 当前开发沙箱禁止子进程创建（`PermissionError: preserve Python deletion guard`），
@@ -171,10 +176,73 @@ python -m ruff format --check .                                          ->  48 
 **对 A 的影响**：入口原有的 `if not database.is_migrated(): database.ensure_schema()` 判断
 无需改动，语义更准确了——老用户数据库现在会被正确识别为需要升级。
 
+## 并发完成的丢失更新修复（2026-11-04）
+
+A 指出 `mark_completed()` 存在先读后写的丢失更新问题。已复现确认并修复。
+
+**复现**：两个独立 Session 各自 `get()` 到同一个 `pending` 任务后，A 先完成并提交，
+B 的 Session 中仍持有 `pending` 快照，`session.get()` 命中 identity map 不回查数据库，
+于是把 `completed_at` 覆盖为 B 的时间。实测第一次写入 `2026-05-01T08:00Z`
+被覆盖成 `2026-09-09T20:00Z`。
+
+**修复**：改为单条带条件的 `UPDATE`，由数据库保证原子性：
+
+```sql
+UPDATE tasks SET status='completed', completed_at=?
+ WHERE id = ? AND status = 'pending'
+```
+
+未命中（任务不存在或已完成）时不写入任何内容。随后只失效该行的缓存对象并重新读取，
+因此返回值始终是数据库中的真实状态——包括另一个 Session 已写入的首次完成时间。
+`expire()` 只作用于目标行而非 `expire_all()`，避免连带失效调用方在同一 Session 中的其他对象。
+
+**四项要求的落实**：
+
+| 要求 | 实现 |
+| --- | --- |
+| 仅 `pending` 可被改为 `completed` | `WHERE status = 'pending'` 条件 |
+| 已完成则返回已有结果、保留原时间 | UPDATE 未命中，重新读取返回已存值 |
+| 任务不存在仍返回 `None` | 重新读取得到 `None`，公共接口未变 |
+| 事务仍由调用方负责 | 只执行语句，不 `commit()`；已用独立连接验证未提交数据不可见 |
+
+**回归测试**（`tests/test_task_repository.py`）：
+
+- `test_concurrent_repeated_completion_keeps_the_first_time`：两个独立 Session 都先读到
+  同一 `pending` 任务，B 显式持有陈旧快照，先后完成并提交，最终时间仍为首次写入值。
+- `test_a_stale_pending_snapshot_cannot_overwrite_a_completion`：加载对象后由另一 Session
+  完成，再用持有陈旧快照的 Session 执行完成，验证守卫在 `UPDATE` 而非前置读取中。
+
+两项均已反向验证：将实现还原为先读后写后，**两个测试都失败**，确认不是占位测试。
+
+### 同时修正的两处测试缺陷
+
+1. 原 `test_concurrent_repeated_completion_keeps_the_first_time` 让任务先被完成，
+   再由两个 Session 重复完成，并未构造出真正的竞态；且两个未提交写事务并存会触发
+   SQLite `database is locked`。已改为先读后写、依次提交。
+2. `test_repository_does_not_commit_on_its_own` 用 `with sqlite3.connect(...)` 探测，
+   该上下文管理器只管理事务不关闭连接，导致探测结果不可靠（一度误显示"未提交却可见"）。
+   已改为显式 `close()`，并补充回滚后的二次校验。
+
 ## 遗留问题与待协调
 
+> 本节的 Phase 1 遗留项与 Phase 2 的待确认事项已合并整理在
+> [`docs/COORDINATION_C.md`](COORDINATION_C.md)，含每项的建议方案与阻塞状态。
+
 1. **Repository 接口待 A 确认**：见上方提案，尤其是返回 ORM 对象还是 `Task` 数据对象。
-2. **安装包迁移资源**（C / A，Phase 1 遗留）：wheel 产物仍未包含 `migrations/`，
+2. **`mark_completed()` 无法区分「本次完成」与「已被他人完成」**（A + C，需决策）：
+   修复后该方法返回的是数据库真实状态，而非调用方传入的时间。并发场景下，
+   后执行的那次调用会拿到**首次**的 `completed_at`，但返回值本身看不出自己是否是胜者。
+
+   当前对 `TaskService.complete_task` 无影响——文档要求「重复完成已完成任务应成功且保留原完成时间」，
+   现有行为正好满足。但若 A 之后需要区分（例如 UI 想提示「该任务已被完成」），
+   则需扩展返回值，例如：
+
+   ```python
+   def mark_completed(...) -> tuple[TaskRecord | None, bool]: ...   # (记录, 是否本次完成)
+   ```
+
+   这会**改动公共接口**，因此本次未擅自实施。请 A 确认是否需要。
+3. **安装包迁移资源**（C / A，Phase 1 遗留）：wheel 产物仍未包含 `migrations/`，
    本次未处理，需与打包方式一并决定。
-3. **`tests/test_end_to_end.py` 未在本地验证**：见上方说明，需 A 在常规环境复核。
-4. 未验证真实 UI 联调，B 的任务界面尚未提供。
+4. **`tests/test_end_to_end.py` 未在本地验证**：见上方说明，需 A 在常规环境复核。
+5. 未验证真实 UI 联调，B 的任务界面尚未提供。
