@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
+from datetime import date
 
 
 class ProviderError(RuntimeError):
@@ -18,6 +19,7 @@ class ExtractedTask:
     """从消息中提取出的一条任务。"""
 
     title: str
+    due_on: date | None = None
 
 
 @dataclass(frozen=True)

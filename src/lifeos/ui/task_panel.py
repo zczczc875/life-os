@@ -25,6 +25,7 @@ from PySide6.QtWidgets import (
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from collections.abc import Sequence
+    from datetime import date
 
 __all__ = [
     "COMPLETED_TOOLTIP",
@@ -60,12 +61,13 @@ class TaskRecord(Protocol):
     id: str
     title: str
     status: str
+    due_on: date | None
 
 
 class TaskService(Protocol):
     """The service surface ``docs/PHASE2_TASKS.md`` defines for A."""
 
-    def create_task(self, title: str) -> TaskRecord: ...
+    def create_task(self, title: str, *, due_on: date | None = None) -> TaskRecord: ...
 
     def list_tasks(self) -> Sequence[TaskRecord]: ...
 
@@ -224,7 +226,11 @@ class TaskPanel(QWidget):
 
     def _build_item(self, task: TaskRecord) -> QListWidgetItem:
         completed = task.status == STATUS_COMPLETED
-        item = QListWidgetItem(task.title)
+        text = task.title
+        due_on = getattr(task, "due_on", None)
+        if due_on is not None:
+            text = f"{text}  ·  截止 {due_on.isoformat()}"
+        item = QListWidgetItem(text)
         item.setData(Qt.ItemDataRole.UserRole, task.id)
         flags = Qt.ItemFlag.ItemIsEnabled
         if not completed:

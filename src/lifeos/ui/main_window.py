@@ -7,11 +7,19 @@ to the database directly.
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QFont
-from PySide6.QtWidgets import QLabel, QMainWindow, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QHBoxLayout, QLabel, QMainWindow, QPushButton, QVBoxLayout, QWidget
 
+from lifeos.ui.message_import import MessageImportDialog
 from lifeos.ui.task_panel import TaskPanel, TaskService
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
+
+    from lifeos.ai.provider import TaskExtractionResponse
 
 APP_NAME = "LifeOS"
 WELCOME_TEXT = "欢迎使用 LifeOS，从今天开始整理你的生活。"
@@ -28,6 +36,8 @@ class MainWindow(QMainWindow):
         app_version: str,
         database_status: bool,
         task_service: TaskService | None = None,
+        *,
+        draft_preview: Callable[[str], TaskExtractionResponse] | None = None,
     ) -> None:
         super().__init__()
         self._app_version = app_version
@@ -53,6 +63,15 @@ class MainWindow(QMainWindow):
         self.tasks_heading_label.setFont(heading_font)
 
         self.task_panel = TaskPanel(task_service, self)
+        tasks_header = QHBoxLayout()
+        tasks_header.addWidget(self.tasks_heading_label, 1)
+        if task_service is not None and draft_preview is not None:
+            self.message_import_button = QPushButton("从通知导入", self)
+            self.message_import_button.setObjectName("messageImportButton")
+            self.message_import_button.clicked.connect(
+                lambda: self._open_message_import(draft_preview, task_service)
+            )
+            tasks_header.addWidget(self.message_import_button)
 
         layout = QVBoxLayout()
         layout.setContentsMargins(32, 28, 32, 28)
@@ -61,9 +80,9 @@ class MainWindow(QMainWindow):
             self.title_label,
             self.version_label,
             self.welcome_label,
-            self.tasks_heading_label,
         ):
             layout.addWidget(label)
+        layout.addLayout(tasks_header)
         layout.addWidget(self.task_panel, 1)
         layout.addWidget(self.status_label)
 
@@ -73,6 +92,15 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(central_widget)
 
         self._render_database_status()
+
+    def _open_message_import(
+        self,
+        draft_preview: Callable[[str], TaskExtractionResponse],
+        task_service: TaskService,
+    ) -> None:
+        dialog = MessageImportDialog(draft_preview, task_service, self)
+        dialog.task_saved.connect(self.task_panel.refresh)
+        dialog.open()
 
     @staticmethod
     def _build_label(object_name: str, text: str) -> QLabel:

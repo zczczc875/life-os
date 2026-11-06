@@ -183,7 +183,7 @@ def test_models_and_migrations_do_not_drift(tmp_path: Path):
 def test_only_reviewed_revisions_are_committed():
     """Guard against a stray probe revision being committed by accident."""
     committed = sorted(path.name for path in VERSIONS_DIR.glob("*.py"))
-    assert committed == ["0001_app_settings.py", "0002_tasks.py"]
+    assert committed == ["0001_app_settings.py", "0002_tasks.py", "0003_task_due_on.py"]
 
 
 def test_probe_revisions_never_touch_the_source_tree(tmp_path: Path, add_follow_up_revision):

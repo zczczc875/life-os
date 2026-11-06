@@ -1,6 +1,6 @@
 # LifeOS
 
-Windows 本地优先桌面工程。界面、数据库、配置、日志和 AI Mock 已合入架构分支；接口仍待 B、C、D 共同确认。验收结果和待解决问题见 [集成记录](docs/INTEGRATION.md)。
+LifeOS 是 Windows 上的本地任务工具。你可以手动添加任务，也可以把通知粘贴进来，生成带截止日期的草稿，核对后保存。
 
 ## 环境与安装
 
@@ -15,6 +15,8 @@ python -m pip install -e ".[dev]"
 首次启动前先执行下方数据库迁移，再使用 `python -m lifeos` 启动。启动顺序和接口契约见 [架构文档](docs/ARCHITECTURE.md)。SQLite 默认目录为 `%LOCALAPPDATA%\LifeOS\data\`；安装包或导入模块时不应创建数据。
 
 Phase 2 的任务面板支持添加任务、查看列表并标记完成。首次使用或更新代码后须先迁移至最新版本；任务表缺失时应用会提示迁移。并发完成时间覆盖问题已修复并复测，详见 [Phase 2 交付记录](docs/DELIVERY_PHASE2.md)。
+
+在主界面点击「从通知导入」，粘贴如 `提交实验报告 DDL: 2026-12-18` 的通知，点击「生成草稿」。核对或修改标题与日期后，点击「保存选中任务」。当前在本机按规则解析，不后台读取消息，也不发送到点通知。支持的写法见 [Phase 3 说明](docs/PHASE3_MESSAGE_DRAFTS.md)，EXE 构建方式见 [Windows 打包文档](packaging/README.md)。
 
 ## 迁移与测试
 
