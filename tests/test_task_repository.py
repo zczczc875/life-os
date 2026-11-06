@@ -49,15 +49,16 @@ def database(tmp_path: Path):
 
 
 def test_migration_creates_the_documented_columns(database):
-    """The tasks table must expose exactly the Phase 2 fields."""
+    """The tasks table preserves the Phase 2 fields and adds an optional date."""
     columns = {column["name"]: column for column in inspect(database.engine).get_columns("tasks")}
 
-    assert set(columns) == {"id", "title", "status", "created_at", "completed_at"}
+    assert set(columns) == {"id", "title", "status", "created_at", "completed_at", "due_on"}
     assert columns["id"]["nullable"] is False
     assert columns["title"]["nullable"] is False
     assert columns["status"]["nullable"] is False
     assert columns["created_at"]["nullable"] is False
     assert columns["completed_at"]["nullable"] is True
+    assert columns["due_on"]["nullable"] is True
 
     assert inspect(database.engine).get_pk_constraint("tasks")["constrained_columns"] == ["id"]
 

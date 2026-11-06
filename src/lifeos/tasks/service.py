@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from typing import TYPE_CHECKING, Literal
 
 from sqlalchemy.exc import OperationalError, SQLAlchemyError
@@ -24,6 +24,7 @@ class Task:
     status: Literal["pending", "completed"]
     created_at: datetime
     completed_at: datetime | None
+    due_on: date | None = None
 
 
 class TaskValidationError(ValueError):
@@ -51,14 +52,20 @@ def _to_task(record: TaskRecord) -> Task:
         status=record.status,
         created_at=_utc(record.created_at),
         completed_at=_utc(record.completed_at) if record.completed_at is not None else None,
+        due_on=record.due_on,
     )
 
 
 def _storage_error(error: Exception) -> TaskStorageError:
-    if isinstance(error, OperationalError) and "no such table: tasks" in str(error).lower():
-        return TaskStorageError(
-            "任务数据表不存在，请先执行数据库迁移：python -m alembic upgrade head"
-        )
+    if isinstance(error, OperationalError):
+        detail = str(error.orig).lower()
+        if detail == "no such table: tasks" or detail in (
+            "no such column: tasks.due_on",
+            "table tasks has no column named due_on",
+        ):
+            return TaskStorageError(
+                "任务数据表需要更新，请先执行数据库迁移：python -m alembic upgrade head"
+            )
     return TaskStorageError("任务存储操作失败")
 
 
@@ -68,12 +75,14 @@ class TaskService:
     def __init__(self, database: Database) -> None:
         self._database = database
 
-    def create_task(self, title: str) -> Task:
+    def create_task(self, title: str, *, due_on: date | None = None) -> Task:
         if not isinstance(title, str) or not title.strip():
             raise TaskValidationError("任务标题不能为空")
+        if due_on is not None and (not isinstance(due_on, date) or isinstance(due_on, datetime)):
+            raise TaskValidationError("截止日期必须是有效的日历日期")
         try:
             with self._database.session_scope() as session:
-                result = _to_task(TaskRepository(session).add(title.strip()))
+                result = _to_task(TaskRepository(session).add(title.strip(), due_on=due_on))
             return result
         except TaskTitleError as error:
             raise TaskValidationError("任务标题不能为空") from error

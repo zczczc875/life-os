@@ -58,7 +58,9 @@ class TaskRepository:
     def __init__(self, session: Session) -> None:
         self._session = session
 
-    def add(self, title: str, task_id: str | None = None) -> TaskRecord:
+    def add(
+        self, title: str, task_id: str | None = None, *, due_on: _datetime.date | None = None
+    ) -> TaskRecord:
         """Insert a ``pending`` task and return the stored row.
 
         The title is trimmed; an empty result raises :class:`TaskTitleError`.
@@ -72,6 +74,7 @@ class TaskRepository:
             status=TASK_STATUS_PENDING,
             created_at=utcnow(),
             completed_at=None,
+            due_on=due_on,
         )
         self._session.add(record)
         # Flush so a duplicate id or constraint violation surfaces here rather

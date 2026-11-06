@@ -11,6 +11,7 @@ from PySide6.QtWidgets import QMessageBox
 
 import lifeos.app
 from lifeos.config.settings import get_settings
+from tests._helpers import head_revision
 
 _PROJECT = Path(__file__).resolve().parents[1]
 _spec = importlib.util.spec_from_file_location(
@@ -84,7 +85,7 @@ def test_confirm_fresh_initialization_creates_latest_schema(isolated_data, monke
     prompts = _answer(monkeypatch, QMessageBox.StandardButton.Yes)
     assert launcher.main() == 0
     assert len(prompts) == 1
-    assert _version(data / "lifeos.sqlite3") == "0002_tasks"
+    assert _version(data / "lifeos.sqlite3") == head_revision()
     assert launches == [True] and errors == []
 
 
@@ -104,7 +105,7 @@ def test_confirm_existing_upgrade_preserves_settings_and_backup(isolated_data, m
     database = _old_database(data)
     prompts = _answer(monkeypatch, QMessageBox.StandardButton.Yes)
     assert launcher.main() == 0
-    assert len(prompts) == 1 and _version(database) == "0002_tasks"
+    assert len(prompts) == 1 and _version(database) == head_revision()
     backups = list(data.glob("lifeos.sqlite3.before-upgrade-*.bak"))
     assert len(backups) == 1 and _version(backups[0]) == "0001_app_settings"
     for path in (database, backups[0]):

@@ -10,11 +10,14 @@ import os
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from dataclasses import dataclass, field
+from datetime import date, datetime
 
 import pytest
-from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QLineEdit
+from PySide6.QtCore import Qt, QTimer
+from PySide6.QtWidgets import QDialog, QLineEdit
 
+from lifeos.ai.provider import ExtractedTask, ProviderError, TaskExtractionResponse
+from lifeos.ui import task_panel
 from lifeos.ui.main_window import TASKS_HEADING, MainWindow
 from lifeos.ui.task_panel import (
     EMPTY_HINT_TEXT,
@@ -46,6 +49,8 @@ class TaskDouble:
     id: str
     title: str
     status: str = STATUS_PENDING
+    due_on: date | None = None
+    completed_at: datetime | None = None
 
 
 @dataclass
@@ -60,7 +65,7 @@ class FakeTaskService:
     completed_ids: list[str] = field(default_factory=list)
     _next_id: int = 0
 
-    def create_task(self, title: str) -> TaskDouble:
+    def create_task(self, title: str, *, due_on: date | None = None) -> TaskDouble:
         stripped = title.strip()
         if not stripped:
             raise TaskValidationError(EMPTY_TITLE_MESSAGE)
@@ -68,7 +73,7 @@ class FakeTaskService:
             raise TaskStorageError("write failed")
         self.created_titles.append(stripped)
         self._next_id += 1
-        task = TaskDouble(id=f"task-{self._next_id}", title=stripped)
+        task = TaskDouble(id=f"task-{self._next_id}", title=stripped, due_on=due_on)
         self.tasks.append(task)
         return task
 
@@ -96,6 +101,54 @@ def panel(qtbot):
     widget = TaskPanel(service)
     qtbot.addWidget(widget)
     return widget
+
+
+def test_deadline_hints_follow_the_local_day_and_task_status(qtbot, monkeypatch):
+    today = date(2026, 12, 9)
+
+    class LocalDate(date):
+        @classmethod
+        def today(cls):
+            return today
+
+    monkeypatch.setattr(task_panel, "date", LocalDate, raising=False)
+    service = FakeTaskService(
+        tasks=[
+            TaskDouble("past", "交报告", due_on=date(2026, 12, 8)),
+            TaskDouble("today", "交表", due_on=date(2026, 12, 9)),
+            TaskDouble("later", "报名", due_on=date(2026, 12, 10)),
+            TaskDouble("done", "付款", status=STATUS_COMPLETED, due_on=date(2026, 12, 8)),
+            TaskDouble("undated", "买菜"),
+        ]
+    )
+    widget = TaskPanel(service)
+    qtbot.addWidget(widget)
+    assert widget.task_titles() == [
+        "已逾期  ·  交报告  ·  截止 2026-12-08",
+        "今天到期  ·  交表  ·  截止 2026-12-09",
+        "报名  ·  截止 2026-12-10",
+        "付款  ·  截止 2026-12-08",
+        "买菜",
+    ]
+
+    today = date(2026, 12, 10)
+    timer = widget.findChild(QTimer)
+    assert timer is not None and timer.isActive()
+    service.fail_list = True
+    timer.timeout.emit()
+    assert widget.error_message() == LOAD_FAILED_MESSAGE
+    service.fail_list = False
+    timer.timeout.emit()
+    assert widget.error_message() == ""
+    assert widget.task_titles()[1:3] == [
+        "已逾期  ·  交表  ·  截止 2026-12-09",
+        "今天到期  ·  报名  ·  截止 2026-12-10",
+    ]
+    assert service.completed_ids == []
+
+    widget.task_list.item(2).setCheckState(Qt.CheckState.Checked)
+    assert widget.task_titles()[2] == "报名  ·  截止 2026-12-10"
+    assert service.completed_ids == ["later"]
 
 
 def test_empty_state_shows_hint_and_hides_list(qtbot):
@@ -250,3 +303,100 @@ def test_main_window_without_service_still_builds(qtbot):
 
     assert window.task_panel.task_input.isEnabled() is False
     assert "未连接" in window.status_label.text()
+
+
+def _open_message_import(qtbot, service, preview):
+    window = MainWindow("0.1.0", True, task_service=service, draft_preview=preview)
+    qtbot.addWidget(window)
+    window.show()
+    window.message_import_button.click()
+    dialog = window.findChild(QDialog, "messageImportDialog")
+    assert dialog is not None and dialog.isVisible() and dialog.isModal()
+    return window, dialog
+
+
+def test_message_preview_saves_only_the_confirmed_draft_and_refreshes_tasks(qtbot):
+    service = FakeTaskService()
+    received = []
+
+    def preview(message):
+        received.append(message)
+        return TaskExtractionResponse(
+            [ExtractedTask("提交初稿", due_on=date(2026, 12, 8)), ExtractedTask("带电脑")]
+        )
+
+    window, dialog = _open_message_import(qtbot, service, preview)
+    dialog.message_input.setPlainText("通知 <b>原文</b>")
+    dialog.generate_button.click()
+
+    assert received == ["通知 <b>原文</b>"]
+    assert service.tasks == []
+    assert dialog.draft_list.count() == 2
+    assert dialog.due_input.text() == "2026-12-08"
+
+    dialog.title_input.setText("提交期末报告")
+    dialog.due_input.setText("2026-12-09")
+    dialog.draft_list.setCurrentRow(1)
+    dialog.draft_list.setCurrentRow(0)
+    assert dialog.title_input.text() == "提交期末报告"
+    assert dialog.due_input.text() == "2026-12-09"
+    dialog.save_button.click()
+
+    assert [(task.title, task.due_on) for task in service.tasks] == [
+        ("提交期末报告", date(2026, 12, 9)),
+    ]
+    assert window.task_panel.task_list.item(0).text().endswith("提交期末报告  ·  截止 2026-12-09")
+    assert dialog.draft_list.count() == 1
+    assert not dialog.save_button.isEnabled()
+    dialog.draft_list.setCurrentRow(0)
+    assert dialog.title_input.text() == "带电脑"
+
+    dialog.reject()
+    qtbot.waitUntil(lambda: window.findChild(QDialog, "messageImportDialog") is None)
+    window.message_import_button.click()
+    new_dialog = window.findChild(QDialog, "messageImportDialog")
+    assert new_dialog.message_input.toPlainText() == ""
+    assert new_dialog.draft_list.count() == 0
+    assert service.created_titles == ["提交期末报告"]
+
+
+def test_message_import_keeps_draft_after_invalid_date_and_save_failure(qtbot):
+    service = FakeTaskService(fail_create=True)
+    _, dialog = _open_message_import(
+        qtbot, service, lambda message: TaskExtractionResponse([ExtractedTask(message)])
+    )
+    dialog.message_input.setPlainText("写实验报告")
+    dialog.generate_button.click()
+    dialog.due_input.setText("2026-02-29")
+    dialog.save_button.click()
+
+    assert service.tasks == []
+    assert "YYYY-MM-DD" in dialog.feedback_label.text()
+
+    dialog.due_input.setText("2028-02-29")
+    dialog.save_button.click()
+    assert service.tasks == []
+    assert "保存失败" in dialog.feedback_label.text()
+    assert dialog.draft_list.count() == 1
+    assert dialog.due_input.text() == "2028-02-29"
+
+    service.fail_create = False
+    dialog.save_button.click()
+    assert service.created_titles == ["写实验报告"]
+    assert dialog.draft_list.count() == 0
+    assert not dialog.save_button.isEnabled()
+
+
+def test_message_preview_hides_provider_error_details(qtbot):
+    def preview(_message):
+        raise ProviderError("通知隐私正文")
+
+    service = FakeTaskService()
+    _, dialog = _open_message_import(qtbot, service, preview)
+    dialog.message_input.setPlainText("通知隐私正文")
+    dialog.generate_button.click()
+
+    assert "生成失败" in dialog.feedback_label.text()
+    assert "通知隐私正文" not in dialog.feedback_label.text()
+    assert not dialog.save_button.isEnabled()
+    assert service.tasks == []

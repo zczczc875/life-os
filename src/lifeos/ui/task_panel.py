@@ -8,9 +8,10 @@ source of truth, so every successful mutation re-reads the list.
 
 from __future__ import annotations
 
+from datetime import date
 from typing import TYPE_CHECKING, Protocol
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
     QHBoxLayout,
@@ -25,6 +26,7 @@ from PySide6.QtWidgets import (
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from collections.abc import Sequence
+    from datetime import datetime
 
 __all__ = [
     "COMPLETED_TOOLTIP",
@@ -52,6 +54,7 @@ LOAD_FAILED_MESSAGE = "任务加载失败，请稍后重试"
 SERVICE_MISSING_TEXT = "任务服务尚未接入，暂不可用。"
 
 COMPLETED_TOOLTIP = "已完成"
+LATE_COMPLETION_TEXT = "逾期完成"
 
 
 class TaskRecord(Protocol):
@@ -60,12 +63,14 @@ class TaskRecord(Protocol):
     id: str
     title: str
     status: str
+    due_on: date | None
+    completed_at: datetime | None
 
 
 class TaskService(Protocol):
     """The service surface ``docs/PHASE2_TASKS.md`` defines for A."""
 
-    def create_task(self, title: str) -> TaskRecord: ...
+    def create_task(self, title: str, *, due_on: date | None = None) -> TaskRecord: ...
 
     def list_tasks(self) -> Sequence[TaskRecord]: ...
 
@@ -79,6 +84,7 @@ class TaskPanel(QWidget):
         super().__init__(parent)
         self._service = task_service
         self._loading = False
+        self._rendered_on: date | None = None
 
         self.task_input = QLineEdit(self)
         self.task_input.setObjectName("taskInput")
@@ -122,9 +128,11 @@ class TaskPanel(QWidget):
         self.add_button.clicked.connect(self.submit_input)
         self.task_list.itemChanged.connect(self._on_item_changed)
 
-        if self._service is None:
-            self.set_service_available(False)
-        else:
+        self._deadline_timer = QTimer(self)
+        self._deadline_timer.setInterval(60_000)
+        self._deadline_timer.timeout.connect(self._refresh_on_date_change)
+        self.set_service_available(task_service is not None)
+        if task_service is not None:
             self.refresh()
 
     # -- public API -----------------------------------------------------
@@ -134,12 +142,14 @@ class TaskPanel(QWidget):
         self.task_input.setEnabled(bool(available))
         self.add_button.setEnabled(bool(available))
         if not available:
+            self._deadline_timer.stop()
             self.task_list.clear()
             self.task_list.setVisible(False)
             self._set_error("")
             self.empty_label.setText(SERVICE_MISSING_TEXT)
             self.empty_label.setVisible(True)
         else:
+            self._deadline_timer.start()
             self.task_list.setVisible(True)
             self.empty_label.setText(EMPTY_HINT_TEXT)
             self._set_error("")
@@ -152,6 +162,7 @@ class TaskPanel(QWidget):
             tasks = list(self._service.list_tasks())
         except Exception:  # noqa: BLE001 - the UI must not crash on storage errors
             self._render([])
+            self._rendered_on = None
             self._set_error(LOAD_FAILED_MESSAGE)
             return
         self._set_error("")
@@ -209,12 +220,18 @@ class TaskPanel(QWidget):
 
     # -- rendering ------------------------------------------------------
 
+    def _refresh_on_date_change(self) -> None:
+        if date.today() != self._rendered_on:
+            self.refresh()
+
     def _render(self, tasks: Sequence[TaskRecord]) -> None:
+        today = date.today()
+        self._rendered_on = today
         self._loading = True
         try:
             self.task_list.clear()
             for task in tasks:
-                self.task_list.addItem(self._build_item(task))
+                self.task_list.addItem(self._build_item(task, today))
         finally:
             self._loading = False
         has_tasks = bool(tasks)
@@ -222,9 +239,26 @@ class TaskPanel(QWidget):
         self.empty_label.setText(EMPTY_HINT_TEXT)
         self.empty_label.setVisible(not has_tasks)
 
-    def _build_item(self, task: TaskRecord) -> QListWidgetItem:
+    def _build_item(self, task: TaskRecord, today: date) -> QListWidgetItem:
         completed = task.status == STATUS_COMPLETED
-        item = QListWidgetItem(task.title)
+        completed_late = False
+        text = task.title
+        due_on = getattr(task, "due_on", None)
+        if due_on is not None:
+            text = f"{text}  ·  截止 {due_on.isoformat()}"
+            if completed:
+                completed_at = getattr(task, "completed_at", None)
+                completed_late = (
+                    completed_at is not None and completed_at.astimezone().date() > due_on
+                )
+                if completed_late:
+                    text = f"{LATE_COMPLETION_TEXT}  ·  {text}"
+            elif task.status == STATUS_PENDING:
+                if due_on < today:
+                    text = f"已逾期  ·  {text}"
+                elif due_on == today:
+                    text = f"今天到期  ·  {text}"
+        item = QListWidgetItem(text)
         item.setData(Qt.ItemDataRole.UserRole, task.id)
         flags = Qt.ItemFlag.ItemIsEnabled
         if not completed:
@@ -232,11 +266,14 @@ class TaskPanel(QWidget):
         item.setFlags(flags)
         item.setCheckState(Qt.CheckState.Checked if completed else Qt.CheckState.Unchecked)
         if completed:
-            font = QFont()
-            font.setStrikeOut(True)
+            font = QFont(self.task_list.font())
+            font.setStrikeOut(not completed_late)
+            if completed_late:
+                font.setBold(True)
+            else:
+                item.setForeground(Qt.GlobalColor.gray)
             item.setFont(font)
-            item.setForeground(Qt.GlobalColor.gray)
-            item.setToolTip(COMPLETED_TOOLTIP)
+            item.setToolTip(LATE_COMPLETION_TEXT if completed_late else COMPLETED_TOOLTIP)
         return item
 
     def _on_item_changed(self, item: QListWidgetItem) -> None:
