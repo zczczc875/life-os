@@ -13,10 +13,11 @@ from dataclasses import dataclass, field
 from datetime import date
 
 import pytest
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import QDialog, QLineEdit
 
 from lifeos.ai.provider import ExtractedTask, ProviderError, TaskExtractionResponse
+from lifeos.ui import task_panel
 from lifeos.ui.main_window import TASKS_HEADING, MainWindow
 from lifeos.ui.task_panel import (
     EMPTY_HINT_TEXT,
@@ -99,6 +100,54 @@ def panel(qtbot):
     widget = TaskPanel(service)
     qtbot.addWidget(widget)
     return widget
+
+
+def test_deadline_hints_follow_the_local_day_and_task_status(qtbot, monkeypatch):
+    today = date(2026, 12, 9)
+
+    class LocalDate(date):
+        @classmethod
+        def today(cls):
+            return today
+
+    monkeypatch.setattr(task_panel, "date", LocalDate, raising=False)
+    service = FakeTaskService(
+        tasks=[
+            TaskDouble("past", "交报告", due_on=date(2026, 12, 8)),
+            TaskDouble("today", "交表", due_on=date(2026, 12, 9)),
+            TaskDouble("later", "报名", due_on=date(2026, 12, 10)),
+            TaskDouble("done", "付款", status=STATUS_COMPLETED, due_on=date(2026, 12, 8)),
+            TaskDouble("undated", "买菜"),
+        ]
+    )
+    widget = TaskPanel(service)
+    qtbot.addWidget(widget)
+    assert widget.task_titles() == [
+        "已逾期  ·  交报告  ·  截止 2026-12-08",
+        "今天到期  ·  交表  ·  截止 2026-12-09",
+        "报名  ·  截止 2026-12-10",
+        "付款  ·  截止 2026-12-08",
+        "买菜",
+    ]
+
+    today = date(2026, 12, 10)
+    timer = widget.findChild(QTimer)
+    assert timer is not None and timer.isActive()
+    service.fail_list = True
+    timer.timeout.emit()
+    assert widget.error_message() == LOAD_FAILED_MESSAGE
+    service.fail_list = False
+    timer.timeout.emit()
+    assert widget.error_message() == ""
+    assert widget.task_titles()[1:3] == [
+        "已逾期  ·  交表  ·  截止 2026-12-09",
+        "今天到期  ·  报名  ·  截止 2026-12-10",
+    ]
+    assert service.completed_ids == []
+
+    widget.task_list.item(2).setCheckState(Qt.CheckState.Checked)
+    assert widget.task_titles()[2] == "报名  ·  截止 2026-12-10"
+    assert service.completed_ids == ["later"]
 
 
 def test_empty_state_shows_hint_and_hides_list(qtbot):
@@ -295,7 +344,7 @@ def test_message_preview_saves_only_the_confirmed_draft_and_refreshes_tasks(qtbo
     assert [(task.title, task.due_on) for task in service.tasks] == [
         ("提交期末报告", date(2026, 12, 9)),
     ]
-    assert window.task_panel.task_list.item(0).text() == "提交期末报告  ·  截止 2026-12-09"
+    assert window.task_panel.task_list.item(0).text().endswith("提交期末报告  ·  截止 2026-12-09")
     assert dialog.draft_list.count() == 1
     assert not dialog.save_button.isEnabled()
     dialog.draft_list.setCurrentRow(0)

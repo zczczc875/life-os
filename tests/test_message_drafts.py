@@ -111,7 +111,8 @@ def test_pasted_notice_is_persisted_only_after_desktop_confirmation(qtbot, tmp_p
         dialog.save_button.click()
         assert len(service.list_tasks()) == 1
         dialog.reject()
-        assert window.task_panel.task_titles() == ["提交报名表  ·  截止 2026-12-21"]
+        (row,) = window.task_panel.task_titles()
+        assert row.endswith("提交报名表  ·  截止 2026-12-21")
         window.close()
     finally:
         database.dispose()
