@@ -26,6 +26,7 @@ from PySide6.QtWidgets import (
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from collections.abc import Sequence
+    from datetime import datetime
 
 __all__ = [
     "COMPLETED_TOOLTIP",
@@ -53,6 +54,7 @@ LOAD_FAILED_MESSAGE = "任务加载失败，请稍后重试"
 SERVICE_MISSING_TEXT = "任务服务尚未接入，暂不可用。"
 
 COMPLETED_TOOLTIP = "已完成"
+LATE_COMPLETION_TEXT = "逾期完成"
 
 
 class TaskRecord(Protocol):
@@ -62,6 +64,7 @@ class TaskRecord(Protocol):
     title: str
     status: str
     due_on: date | None
+    completed_at: datetime | None
 
 
 class TaskService(Protocol):
@@ -238,11 +241,19 @@ class TaskPanel(QWidget):
 
     def _build_item(self, task: TaskRecord, today: date) -> QListWidgetItem:
         completed = task.status == STATUS_COMPLETED
+        completed_late = False
         text = task.title
         due_on = getattr(task, "due_on", None)
         if due_on is not None:
             text = f"{text}  ·  截止 {due_on.isoformat()}"
-            if task.status == STATUS_PENDING:
+            if completed:
+                completed_at = getattr(task, "completed_at", None)
+                completed_late = (
+                    completed_at is not None and completed_at.astimezone().date() > due_on
+                )
+                if completed_late:
+                    text = f"{LATE_COMPLETION_TEXT}  ·  {text}"
+            elif task.status == STATUS_PENDING:
                 if due_on < today:
                     text = f"已逾期  ·  {text}"
                 elif due_on == today:
@@ -255,11 +266,14 @@ class TaskPanel(QWidget):
         item.setFlags(flags)
         item.setCheckState(Qt.CheckState.Checked if completed else Qt.CheckState.Unchecked)
         if completed:
-            font = QFont()
-            font.setStrikeOut(True)
+            font = QFont(self.task_list.font())
+            font.setStrikeOut(not completed_late)
+            if completed_late:
+                font.setBold(True)
+            else:
+                item.setForeground(Qt.GlobalColor.gray)
             item.setFont(font)
-            item.setForeground(Qt.GlobalColor.gray)
-            item.setToolTip(COMPLETED_TOOLTIP)
+            item.setToolTip(LATE_COMPLETION_TEXT if completed_late else COMPLETED_TOOLTIP)
         return item
 
     def _on_item_changed(self, item: QListWidgetItem) -> None:

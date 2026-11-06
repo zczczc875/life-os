@@ -10,7 +10,7 @@ import os
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from dataclasses import dataclass, field
-from datetime import date
+from datetime import date, datetime
 
 import pytest
 from PySide6.QtCore import Qt, QTimer
@@ -50,6 +50,7 @@ class TaskDouble:
     title: str
     status: str = STATUS_PENDING
     due_on: date | None = None
+    completed_at: datetime | None = None
 
 
 @dataclass

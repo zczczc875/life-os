@@ -1,4 +1,4 @@
-from datetime import date, datetime
+from datetime import UTC, date, datetime, time, timedelta
 
 import pytest
 from alembic import command
@@ -125,5 +125,51 @@ def test_pasted_notice_is_persisted_only_after_desktop_confirmation(qtbot, tmp_p
             date(2026, 12, 21),
             "pending",
         )
+    finally:
+        reopened.dispose()
+
+
+def test_late_completion_stays_distinct_after_reopening(qtbot, tmp_path, monkeypatch):
+    from PySide6.QtCore import Qt
+
+    from lifeos.infrastructure.database import task_repository
+    from lifeos.ui.task_panel import TaskPanel
+
+    today = date.today()
+    yesterday = today - timedelta(days=1)
+    completed_at = datetime.combine(today, time(0, 30)).astimezone(UTC)
+    settings = Settings(data_dir=tmp_path)
+    database = create_database(settings)
+    try:
+        command.upgrade(alembic_config(database.path), "head")
+        service = TaskService(database)
+        service.create_task("补交签到表", due_on=yesterday)
+        service.create_task("提交实验报告", due_on=today)
+        panel = TaskPanel(service)
+        qtbot.addWidget(panel)
+        monkeypatch.setattr(task_repository, "utcnow", lambda: completed_at.replace(tzinfo=None))
+
+        for index in range(panel.task_list.count()):
+            panel.task_list.item(index).setCheckState(Qt.CheckState.Checked)
+        assert set(panel.task_titles()) == {
+            f"逾期完成  ·  补交签到表  ·  截止 {yesterday}",
+            f"提交实验报告  ·  截止 {today}",
+        }
+        panel.close()
+    finally:
+        database.dispose()
+
+    reopened = create_database(settings)
+    try:
+        panel = TaskPanel(TaskService(reopened))
+        qtbot.addWidget(panel)
+        items = {item.text(): item for item in (panel.task_list.item(i) for i in range(2))}
+        late = items[f"逾期完成  ·  补交签到表  ·  截止 {yesterday}"]
+        on_time = items[f"提交实验报告  ·  截止 {today}"]
+        assert late.checkState() == on_time.checkState() == Qt.CheckState.Checked
+        assert late.toolTip() == "逾期完成"
+        assert not late.font().strikeOut()
+        assert on_time.font().strikeOut()
+        panel.close()
     finally:
         reopened.dispose()
