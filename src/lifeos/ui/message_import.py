@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from datetime import date
 from typing import TYPE_CHECKING
 
 from PySide6.QtCore import QSignalBlocker, Qt, Signal
@@ -20,6 +19,7 @@ from PySide6.QtWidgets import (
 )
 
 from lifeos.ai.provider import ProviderError
+from lifeos.ui.task_dates import DUE_DATE_PLACEHOLDER, parse_optional_due_date
 from lifeos.ui.task_panel import EMPTY_TITLE_MESSAGE, STORAGE_MESSAGE
 
 if TYPE_CHECKING:
@@ -58,7 +58,7 @@ class MessageImportDialog(QDialog):
         self.draft_list = QListWidget()
         self.title_input = QLineEdit()
         self.due_input = QLineEdit()
-        self.due_input.setPlaceholderText("YYYY-MM-DD（可留空）")
+        self.due_input.setPlaceholderText(DUE_DATE_PLACEHOLDER)
         self.feedback_label = QLabel()
         self.feedback_label.setTextFormat(Qt.TextFormat.PlainText)
         self.feedback_label.setWordWrap(True)
@@ -143,13 +143,10 @@ class MessageImportDialog(QDialog):
             self.feedback_label.setText(EMPTY_TITLE_MESSAGE)
             return
 
-        due_text = self.due_input.text().strip()
         try:
-            due_on = date.fromisoformat(due_text) if due_text else None
-            if due_on is not None and due_on.isoformat() != due_text:
-                raise ValueError
-        except ValueError:
-            self.feedback_label.setText("截止日期请输入有效的 YYYY-MM-DD，或留空。")
+            due_on = parse_optional_due_date(self.due_input.text())
+        except ValueError as error:
+            self.feedback_label.setText(str(error))
             return
 
         try:

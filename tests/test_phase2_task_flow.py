@@ -3,8 +3,10 @@
 import os
 import subprocess
 import sys
+from datetime import date
 from pathlib import Path
 
+import pytest
 from PySide6.QtCore import Qt
 
 from lifeos.config.settings import Settings
@@ -14,7 +16,8 @@ from lifeos.ui.main_window import MainWindow
 from lifeos.ui.task_panel import EMPTY_TITLE_MESSAGE
 
 
-def test_ui_creates_completes_and_shows_task_after_process_restart(qtbot, tmp_path):
+@pytest.mark.parametrize("due_text", ["", "2000-02-29"], ids=["undated", "overdue"])
+def test_ui_creates_completes_and_shows_task_after_process_restart(qtbot, tmp_path, due_text):
     data_dir = tmp_path / "data"
     database = create_database(Settings(data_dir=data_dir))
     database.ensure_schema()
@@ -30,18 +33,24 @@ def test_ui_creates_completes_and_shows_task_after_process_restart(qtbot, tmp_pa
     assert TaskService(database).list_tasks() == []
 
     panel.task_input.setText("  准备项目汇报  ")
+    panel.due_input.setText(due_text)
     qtbot.mouseClick(panel.add_button, Qt.MouseButton.LeftButton)
-    assert panel.task_titles() == ["准备项目汇报"]
+    expected_title = "准备项目汇报"
+    if due_text:
+        expected_title += f"  ·  截止 {due_text}"
+    assert panel.task_titles() == [f"已逾期  ·  {expected_title}" if due_text else expected_title]
     assert panel.task_input.text() == ""
+    assert panel.due_input.text() == ""
     assert panel.error_message() == ""
 
     panel.task_list.item(0).setCheckState(Qt.CheckState.Checked)
     completed = panel.task_list.item(0)
     assert completed.checkState() == Qt.CheckState.Checked
-    assert completed.font().strikeOut()
+    assert completed.font().strikeOut() is (not due_text)
     tasks = TaskService(database).list_tasks()
     assert len(tasks) == 1 and tasks[0].status == "completed"
     assert tasks[0].completed_at is not None
+    assert tasks[0].due_on == (date.fromisoformat(due_text) if due_text else None)
     window.close()
     database.dispose()
 
@@ -62,13 +71,19 @@ db = create_database(Settings(data_dir=Path(sys.argv[1])))
 window = MainWindow('test', True, task_service=TaskService(db))
 window.show()
 app.processEvents()
-assert window.task_panel.task_titles() == ['准备项目汇报']
+assert window.task_panel.task_titles() == [sys.argv[2]]
 assert window.task_panel.task_list.item(0).checkState() == Qt.CheckState.Checked
 window.close()
 db.dispose()
 """
     subprocess.run(
-        [sys.executable, "-c", restart, str(data_dir)],
+        [
+            sys.executable,
+            "-c",
+            restart,
+            str(data_dir),
+            f"逾期完成  ·  {expected_title}" if due_text else expected_title,
+        ],
         env=env,
         check=True,
         capture_output=True,

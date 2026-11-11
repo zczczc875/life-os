@@ -24,6 +24,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from lifeos.ui.task_dates import DUE_DATE_PLACEHOLDER, parse_optional_due_date
+
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from collections.abc import Sequence
     from datetime import datetime
@@ -91,6 +93,13 @@ class TaskPanel(QWidget):
         self.task_input.setPlaceholderText(INPUT_PLACEHOLDER)
         self.task_input.setClearButtonEnabled(True)
 
+        self.due_input = QLineEdit(self)
+        self.due_input.setObjectName("taskDueInput")
+        self.due_input.setPlaceholderText(DUE_DATE_PLACEHOLDER)
+        self.due_input.setClearButtonEnabled(True)
+        due_label = QLabel("截止日期", self)
+        due_label.setBuddy(self.due_input)
+
         self.add_button = QPushButton("添加", self)
         self.add_button.setObjectName("addTaskButton")
         self.add_button.setDefault(True)
@@ -99,6 +108,11 @@ class TaskPanel(QWidget):
         input_row.setSpacing(8)
         input_row.addWidget(self.task_input, 1)
         input_row.addWidget(self.add_button)
+
+        due_row = QHBoxLayout()
+        due_row.setSpacing(8)
+        due_row.addWidget(due_label)
+        due_row.addWidget(self.due_input, 1)
 
         self.error_label = QLabel("", self)
         self.error_label.setObjectName("taskErrorLabel")
@@ -120,11 +134,13 @@ class TaskPanel(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(8)
         layout.addLayout(input_row)
+        layout.addLayout(due_row)
         layout.addWidget(self.error_label)
         layout.addWidget(self.empty_label)
         layout.addWidget(self.task_list, 1)
 
         self.task_input.returnPressed.connect(self.submit_input)
+        self.due_input.returnPressed.connect(self.submit_input)
         self.add_button.clicked.connect(self.submit_input)
         self.task_list.itemChanged.connect(self._on_item_changed)
 
@@ -140,6 +156,7 @@ class TaskPanel(QWidget):
     def set_service_available(self, available: bool) -> None:
         """Enable or disable the controls when no service is injected yet."""
         self.task_input.setEnabled(bool(available))
+        self.due_input.setEnabled(bool(available))
         self.add_button.setEnabled(bool(available))
         if not available:
             self._deadline_timer.stop()
@@ -170,10 +187,10 @@ class TaskPanel(QWidget):
 
     def submit_input(self) -> None:
         """Handle Enter or a click on the add button."""
-        self.submit(self.task_input.text())
+        self.submit(self.task_input.text(), due_text=self.due_input.text())
 
-    def submit(self, text: str) -> None:
-        """Create a task from ``text``; blank titles never reach the service."""
+    def submit(self, text: str, *, due_text: str = "") -> None:
+        """Create a task from a title and an optional deadline."""
         title = (text or "").strip()
         if not title:
             self._set_error(EMPTY_TITLE_MESSAGE)
@@ -183,7 +200,16 @@ class TaskPanel(QWidget):
             self._set_error(SERVICE_MISSING_TEXT)
             return
         try:
-            self._service.create_task(title)
+            due_on = parse_optional_due_date(due_text)
+        except ValueError as error:
+            self._set_error(str(error))
+            self.due_input.setFocus()
+            return
+        try:
+            if due_on is None:
+                self._service.create_task(title)
+            else:
+                self._service.create_task(title, due_on=due_on)
         except LookupError:
             self._set_error(NOT_FOUND_MESSAGE)
             return
@@ -194,6 +220,7 @@ class TaskPanel(QWidget):
             self._set_error(STORAGE_MESSAGE)
             return
         self.task_input.clear()
+        self.due_input.clear()
         self.refresh()
 
     def complete(self, task_id: str) -> bool:

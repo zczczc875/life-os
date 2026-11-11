@@ -187,6 +187,32 @@ def test_enter_key_adds_a_task(panel):
     assert panel.task_titles() == ["写周报"]
 
 
+def test_manual_deadline_survives_errors_and_clears_after_retry(panel, qtbot):
+    panel.task_input.setText("写实验报告")
+    panel.due_input.setText("2026-02-29")
+    panel.add_button.click()
+
+    assert panel._service.tasks == []
+    assert "YYYY-MM-DD" in panel.error_message()
+    assert panel.due_input.text() == "2026-02-29"
+
+    panel.due_input.setText("2000-02-29")
+    panel._service.fail_create = True
+    qtbot.keyClick(panel.due_input, Qt.Key.Key_Return)
+
+    assert panel.error_message() == STORAGE_MESSAGE
+    assert panel.task_input.text() == "写实验报告"
+    assert panel.due_input.text() == "2000-02-29"
+
+    panel._service.fail_create = False
+    qtbot.keyClick(panel.due_input, Qt.Key.Key_Return)
+
+    assert [task.due_on for task in panel._service.tasks] == [date(2000, 2, 29)]
+    assert panel.task_titles() == ["已逾期  ·  写实验报告  ·  截止 2000-02-29"]
+    assert panel.task_input.text() == panel.due_input.text() == ""
+    assert panel.error_message() == ""
+
+
 @pytest.mark.parametrize("blank", ["", "   ", "\t\n"])
 def test_blank_title_is_rejected_without_touching_the_service(panel, blank):
     panel.task_input.setText(blank)
@@ -280,6 +306,7 @@ def test_panel_without_service_is_disabled(qtbot):
     qtbot.addWidget(widget)
 
     assert widget.task_input.isEnabled() is False
+    assert widget.due_input.isEnabled() is False
     assert widget.add_button.isEnabled() is False
     assert widget.empty_label.text() == SERVICE_MISSING_TEXT
 
