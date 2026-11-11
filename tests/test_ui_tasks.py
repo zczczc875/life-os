@@ -100,6 +100,24 @@ class FakeTaskService:
         raise TaskNotFoundError(task_id)
 
 
+@dataclass
+class EditingTaskService(FakeTaskService):
+    fail_update: bool = False
+    updated_ids: list[str] = field(default_factory=list)
+
+    def update_task(
+        self, task_id: str, title: str, *, due_on: date | None = None, due_time: time | None = None
+    ) -> TaskDouble:
+        if self.fail_update:
+            raise TaskStorageError("write failed")
+        for task in self.tasks:
+            if task.id == task_id:
+                self.updated_ids.append(task_id)
+                task.title, task.due_on, task.due_time = title, due_on, due_time
+                return task
+        raise TaskNotFoundError(task_id)
+
+
 @pytest.fixture
 def panel(qtbot):
     service = FakeTaskService()
@@ -323,6 +341,134 @@ def test_completed_task_can_not_be_reopened(qtbot):
     assert widget.task_titles() == ["旧任务"]
 
 
+def _open_task_editor(qtbot, panel):
+    qtbot.keyClick(panel.edit_button, Qt.Key.Key_Space)
+    dialog = panel.findChild(QDialog, "taskEditDialog")
+    assert dialog is not None and dialog.isVisible() and dialog.isModal()
+    return dialog
+
+
+def test_selected_pending_task_can_be_edited_and_completed(qtbot, monkeypatch):
+    monkeypatch.setattr(task_panel, "_local_minute", lambda: datetime(2026, 12, 9, 15, 30))
+    service = EditingTaskService(
+        tasks=[
+            TaskDouble("one", "提交初稿", due_on=date(2026, 12, 9), due_time=time(15)),
+            TaskDouble("two", "打印讲义"),
+        ]
+    )
+    widget = TaskPanel(service)
+    qtbot.addWidget(widget)
+    widget.show()
+    assert widget.edit_button.isVisible()
+    assert not widget.edit_button.isEnabled()
+
+    rect = widget.task_list.visualItemRect(widget.task_list.item(0))
+    qtbot.mouseClick(widget.task_list.viewport(), Qt.MouseButton.LeftButton, pos=rect.center())
+    assert widget.edit_button.isEnabled()
+    service.tasks.reverse()
+    widget.refresh()
+    assert widget.task_list.currentRow() == 1
+
+    dialog = _open_task_editor(qtbot, widget)
+    assert dialog.title_input.text() == "提交初稿"
+    assert dialog.due_input.text() == "2026-12-09 15:00"
+    dialog.title_input.setText("  提交终稿  ")
+    dialog.due_input.setText("2026-12-09 17:30")
+    dialog.save_button.click()
+    assert service.updated_ids == ["one"]
+    assert service.completed_ids == []
+    assert widget.task_list.currentRow() == 1
+    assert widget.task_titles() == ["打印讲义", "今天到期  ·  提交终稿  ·  截止 2026-12-09 17:30"]
+
+    qtbot.keyClick(widget.task_list, Qt.Key.Key_Space)
+    assert service.completed_ids == ["one"]
+    assert widget.task_list.item(1).checkState() == Qt.CheckState.Checked
+
+
+def test_completed_task_can_be_edited_to_clear_the_deadline(qtbot):
+    task = TaskDouble(
+        "done",
+        "提交报告",
+        STATUS_COMPLETED,
+        due_on=date(2026, 12, 7),
+        completed_at=datetime(2026, 12, 9).astimezone(UTC),
+    )
+    service = EditingTaskService(tasks=[task])
+    widget = TaskPanel(service)
+    qtbot.addWidget(widget)
+    widget.show()
+    widget.task_list.setCurrentRow(0)
+    assert widget.task_titles()[0].startswith("逾期完成")
+
+    dialog = _open_task_editor(qtbot, widget)
+    dialog.title_input.setText("报告已交")
+    dialog.due_input.clear()
+    dialog.save_button.click()
+
+    assert task.due_on is task.due_time is None
+    assert widget.task_titles() == ["报告已交"]
+    item = widget.task_list.item(0)
+    assert item.checkState() == Qt.CheckState.Checked
+    assert not item.flags() & Qt.ItemFlag.ItemIsUserCheckable
+    assert item.font().strikeOut()
+    assert service.completed_ids == []
+
+
+@pytest.mark.parametrize("close_with_button", [True, False], ids=["cancel", "window-close"])
+def test_dismissing_the_task_editor_discards_edits(qtbot, close_with_button):
+    task = TaskDouble("one", "原任务", due_on=date(2026, 12, 9))
+    service = EditingTaskService(tasks=[task])
+    widget = TaskPanel(service)
+    qtbot.addWidget(widget)
+    widget.show()
+    widget.task_list.setCurrentRow(0)
+
+    dialog = _open_task_editor(qtbot, widget)
+    dialog.title_input.setText("改名")
+    dialog.due_input.clear()
+    if close_with_button:
+        dialog.cancel_button.click()
+    else:
+        dialog.close()
+
+    assert not dialog.isVisible()
+    assert service.updated_ids == []
+    assert (task.title, task.due_on) == ("原任务", date(2026, 12, 9))
+
+
+def test_task_editor_keeps_fields_on_invalid_input_and_storage_retry(qtbot):
+    task = TaskDouble("one", "原任务")
+    service = EditingTaskService(tasks=[task], fail_update=True)
+    widget = TaskPanel(service)
+    qtbot.addWidget(widget)
+    widget.show()
+    widget.task_list.setCurrentRow(0)
+    dialog = _open_task_editor(qtbot, widget)
+
+    dialog.title_input.clear()
+    dialog.save_button.click()
+    assert dialog.feedback_label.text() == EMPTY_TITLE_MESSAGE
+    dialog.title_input.setText("新任务标题")
+    dialog.due_input.setText("2026-12-09 25:00")
+    dialog.save_button.click()
+    assert "YYYY-MM-DD" in dialog.feedback_label.text()
+    assert dialog.due_input.text() == "2026-12-09 25:00"
+
+    dialog.due_input.setText("2026-12-09")
+    dialog.save_button.click()
+    assert dialog.feedback_label.text() == STORAGE_MESSAGE
+    assert dialog.isVisible()
+    assert dialog.title_input.text() == "新任务标题"
+    assert dialog.due_input.text() == "2026-12-09"
+    assert service.updated_ids == []
+
+    service.fail_update = False
+    dialog.save_button.click()
+    assert not dialog.isVisible()
+    assert service.updated_ids == ["one"]
+    assert (task.title, task.due_on, task.due_time) == ("新任务标题", date(2026, 12, 9), None)
+
+
 def test_complete_unknown_task_reports_not_found(panel):
     ok = panel.complete("missing")
 
@@ -356,6 +502,7 @@ def test_panel_without_service_is_disabled(qtbot):
 
     assert widget.task_input.isEnabled() is False
     assert widget.add_button.isEnabled() is False
+    assert widget.edit_button.isHidden()
     assert widget.empty_label.text() == SERVICE_MISSING_TEXT
 
 
@@ -366,6 +513,7 @@ def test_main_window_hosts_the_task_panel(qtbot):
 
     assert window.findChild(QLineEdit, "taskInput") is window.task_panel.task_input
     assert window.tasks_heading_label.text() == TASKS_HEADING
+    assert window.task_panel.edit_button.isHidden()
 
     assert window.findChild(QLineEdit, "taskDueInput") is None
     window.task_panel.submit("明天整理桌面")

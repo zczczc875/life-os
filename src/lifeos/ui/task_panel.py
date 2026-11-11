@@ -1,4 +1,4 @@
-"""Task list UI: input, list and completion.
+"""Task list UI: input, editing and completion.
 
 The panel is presentation-only and talks to an injected task service, so it can
 be exercised with a service double. It never imports the database layer or
@@ -14,6 +14,9 @@ from typing import TYPE_CHECKING, Protocol
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
+    QDialog,
+    QDialogButtonBox,
+    QFormLayout,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -24,7 +27,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from lifeos.ui.task_dates import format_deadline
+from lifeos.ui.task_dates import DUE_DATE_PLACEHOLDER, format_deadline, parse_optional_deadline
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from collections.abc import Callable, Sequence
@@ -60,6 +63,7 @@ SERVICE_MISSING_TEXT = "任务服务尚未接入，暂不可用。"
 
 COMPLETED_TOOLTIP = "已完成"
 LATE_COMPLETION_TEXT = "逾期完成"
+_TASK_FIELDS_ROLE = Qt.ItemDataRole.UserRole + 1
 
 
 class TaskRecord(Protocol):
@@ -74,7 +78,7 @@ class TaskRecord(Protocol):
 
 
 class TaskService(Protocol):
-    """The service surface ``docs/PHASE2_TASKS.md`` defines for A."""
+    """Task operations exposed by the injected service."""
 
     def create_task(
         self, title: str, *, due_on: date | None = None, due_time: time | None = None
@@ -84,9 +88,89 @@ class TaskService(Protocol):
 
     def complete_task(self, task_id: str) -> TaskRecord: ...
 
+    def update_task(
+        self,
+        task_id: str,
+        title: str,
+        *,
+        due_on: date | None = None,
+        due_time: time | None = None,
+    ) -> TaskRecord: ...
+
 
 def _local_minute() -> datetime:
     return datetime.now().replace(second=0, microsecond=0)
+
+
+class _TaskEditDialog(QDialog):
+    """Edit the fields of one existing task and keep them available after errors."""
+
+    def __init__(
+        self,
+        service: TaskService,
+        task_id: str,
+        title: str,
+        deadline: str,
+        parent: QWidget,
+    ) -> None:
+        super().__init__(parent)
+        self._service = service
+        self._task_id = task_id
+        self.setObjectName("taskEditDialog")
+        self.setWindowTitle("编辑任务")
+        self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
+
+        self.title_input = QLineEdit(title, self)
+        self.title_input.setObjectName("editTaskTitleInput")
+        self.due_input = QLineEdit(deadline, self)
+        self.due_input.setObjectName("editTaskDueInput")
+        self.due_input.setPlaceholderText(DUE_DATE_PLACEHOLDER)
+        self.due_input.setClearButtonEnabled(True)
+        self.feedback_label = QLabel(self)
+        self.feedback_label.setObjectName("editTaskErrorLabel")
+        self.feedback_label.setTextFormat(Qt.TextFormat.PlainText)
+        self.feedback_label.setWordWrap(True)
+        self.feedback_label.setStyleSheet("color: #b42318;")
+        self.feedback_label.hide()
+
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel
+        )
+        self.save_button = buttons.button(QDialogButtonBox.StandardButton.Save)
+        self.save_button.setText("保存")
+        self.cancel_button = buttons.button(QDialogButtonBox.StandardButton.Cancel)
+        self.cancel_button.setText("取消")
+        buttons.accepted.connect(self._save)
+        buttons.rejected.connect(self.reject)
+
+        form = QFormLayout()
+        form.addRow("任务标题", self.title_input)
+        form.addRow("截止时间", self.due_input)
+        layout = QVBoxLayout(self)
+        layout.addLayout(form)
+        layout.addWidget(self.feedback_label)
+        layout.addWidget(buttons)
+        self.setMinimumWidth(430)
+        self.title_input.setFocus()
+
+    def _save(self) -> None:
+        title = self.title_input.text().strip()
+        try:
+            if not title:
+                raise ValueError(EMPTY_TITLE_MESSAGE)
+            due_on, due_time = parse_optional_deadline(self.due_input.text())
+            self._service.update_task(self._task_id, title, due_on=due_on, due_time=due_time)
+        except LookupError:
+            message = NOT_FOUND_MESSAGE
+        except ValueError as error:
+            message = str(error).strip() or EMPTY_TITLE_MESSAGE
+        except RuntimeError:
+            message = STORAGE_MESSAGE
+        else:
+            self.accept()
+            return
+        self.feedback_label.setText(message)
+        self.feedback_label.show()
 
 
 class TaskPanel(QWidget):
@@ -101,6 +185,7 @@ class TaskPanel(QWidget):
     ) -> None:
         super().__init__(parent)
         self._service = task_service
+        self._can_edit = callable(getattr(task_service, "update_task", None))
         self._quick_parse = quick_parse
         self._loading = False
         self._rendered_at: datetime | None = None
@@ -137,7 +222,14 @@ class TaskPanel(QWidget):
         self.task_list = QListWidget(self)
         self.task_list.setObjectName("taskList")
         self.task_list.setAlternatingRowColors(True)
-        self.task_list.setSelectionMode(QListWidget.SelectionMode.NoSelection)
+        self.task_list.setSelectionMode(
+            QListWidget.SelectionMode.SingleSelection
+            if self._can_edit
+            else QListWidget.SelectionMode.NoSelection
+        )
+
+        self.edit_button = QPushButton("编辑任务", self)
+        self.edit_button.setObjectName("editTaskButton")
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -146,10 +238,13 @@ class TaskPanel(QWidget):
         layout.addWidget(self.error_label)
         layout.addWidget(self.empty_label)
         layout.addWidget(self.task_list, 1)
+        layout.addWidget(self.edit_button, 0, Qt.AlignmentFlag.AlignRight)
 
         self.task_input.returnPressed.connect(self.submit_input)
         self.add_button.clicked.connect(self.submit_input)
+        self.edit_button.clicked.connect(self._open_editor)
         self.task_list.itemChanged.connect(self._on_item_changed)
+        self.task_list.itemSelectionChanged.connect(self._update_edit_button)
 
         self._deadline_timer = QTimer(self)
         self._deadline_timer.setInterval(60_000)
@@ -164,6 +259,8 @@ class TaskPanel(QWidget):
         """Enable or disable the controls when no service is injected yet."""
         self.task_input.setEnabled(bool(available))
         self.add_button.setEnabled(bool(available))
+        self.edit_button.setVisible(bool(available) and self._can_edit)
+        self._update_edit_button()
         if not available:
             self._deadline_timer.stop()
             self.task_list.clear()
@@ -251,6 +348,23 @@ class TaskPanel(QWidget):
         self.refresh()
         return True
 
+    # -- editing --------------------------------------------------------
+
+    def _open_editor(self) -> None:
+        selected = self.task_list.selectedItems()
+        if self._service is None or not self._can_edit or not selected:
+            return
+        item = selected[0]
+        title, deadline = item.data(_TASK_FIELDS_ROLE)
+        dialog = _TaskEditDialog(
+            self._service, item.data(Qt.ItemDataRole.UserRole), title, deadline, self
+        )
+        dialog.accepted.connect(self.refresh)
+        dialog.open()
+
+    def _update_edit_button(self) -> None:
+        self.edit_button.setEnabled(self._can_edit and bool(self.task_list.selectedItems()))
+
     # -- rendering ------------------------------------------------------
 
     def _refresh_on_deadline_change(self) -> None:
@@ -269,11 +383,16 @@ class TaskPanel(QWidget):
         now = _local_minute()
         self._rendered_at = now
         self._pending_deadlines.clear()
+        selected = self.task_list.selectedItems()
+        selected_id = selected[0].data(Qt.ItemDataRole.UserRole) if selected else None
         self._loading = True
         try:
             self.task_list.clear()
             for task in tasks:
-                self.task_list.addItem(self._build_item(task, now))
+                item = self._build_item(task, now)
+                self.task_list.addItem(item)
+                if task.id == selected_id:
+                    self.task_list.setCurrentItem(item)
         finally:
             self._loading = False
         has_tasks = bool(tasks)
@@ -286,10 +405,11 @@ class TaskPanel(QWidget):
         completed_late = False
         text = task.title
         due_on = getattr(task, "due_on", None)
+        due_time = getattr(task, "due_time", None)
+        due_text = format_deadline(due_on, due_time)
         if due_on is not None:
-            due_time = getattr(task, "due_time", None)
             deadline = datetime.combine(due_on, due_time) if due_time is not None else None
-            text = f"{text}  ·  截止 {format_deadline(due_on, due_time)}"
+            text = f"{text}  ·  截止 {due_text}"
             if completed:
                 completed_at = getattr(task, "completed_at", None)
                 if completed_at is not None:
@@ -311,7 +431,8 @@ class TaskPanel(QWidget):
                     text = f"今天到期  ·  {text}"
         item = QListWidgetItem(text)
         item.setData(Qt.ItemDataRole.UserRole, task.id)
-        flags = Qt.ItemFlag.ItemIsEnabled
+        item.setData(_TASK_FIELDS_ROLE, (task.title, due_text))
+        flags = Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable
         if not completed:
             flags |= Qt.ItemFlag.ItemIsUserCheckable
         item.setFlags(flags)

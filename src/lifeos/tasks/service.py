@@ -74,6 +74,24 @@ def _storage_error(error: Exception) -> TaskStorageError:
     return TaskStorageError("任务存储操作失败")
 
 
+def _validate_task_details(title: str, due_on: date | None, due_time: time | None) -> None:
+    if not isinstance(title, str) or not title.strip():
+        raise TaskValidationError("任务标题不能为空")
+    if due_on is not None and (not isinstance(due_on, date) or isinstance(due_on, datetime)):
+        raise TaskValidationError("截止日期必须是有效的日历日期")
+    if due_time is None:
+        return
+    if due_on is None:
+        raise TaskValidationError("填写截止时间时也需要截止日期")
+    if (
+        not isinstance(due_time, time)
+        or due_time.tzinfo is not None
+        or due_time.second
+        or due_time.microsecond
+    ):
+        raise TaskValidationError("截止时间必须是精确到分钟的本地时间")
+
+
 class TaskService:
     """Operate on tasks using short-lived database transactions."""
 
@@ -83,25 +101,36 @@ class TaskService:
     def create_task(
         self, title: str, *, due_on: date | None = None, due_time: time | None = None
     ) -> Task:
-        if not isinstance(title, str) or not title.strip():
-            raise TaskValidationError("任务标题不能为空")
-        if due_on is not None and (not isinstance(due_on, date) or isinstance(due_on, datetime)):
-            raise TaskValidationError("截止日期必须是有效的日历日期")
-        if due_time is not None:
-            if due_on is None:
-                raise TaskValidationError("填写截止时间时也需要截止日期")
-            if (
-                not isinstance(due_time, time)
-                or due_time.tzinfo is not None
-                or due_time.second
-                or due_time.microsecond
-            ):
-                raise TaskValidationError("截止时间必须是精确到分钟的本地时间")
+        _validate_task_details(title, due_on, due_time)
         try:
             with self._database.session_scope() as session:
                 result = _to_task(
-                    TaskRepository(session).add(title.strip(), due_on=due_on, due_time=due_time)
+                    TaskRepository(session).add(title, due_on=due_on, due_time=due_time)
                 )
+            return result
+        except TaskTitleError as error:
+            raise TaskValidationError("任务标题不能为空") from error
+        except (SQLAlchemyError, OSError) as error:
+            raise _storage_error(error) from error
+
+    def update_task(
+        self,
+        task_id: str,
+        title: str,
+        *,
+        due_on: date | None = None,
+        due_time: time | None = None,
+    ) -> Task:
+        """Replace a saved task's title and optional deadline."""
+        _validate_task_details(title, due_on, due_time)
+        try:
+            with self._database.session_scope() as session:
+                record = TaskRepository(session).update_details(
+                    task_id, title, due_on=due_on, due_time=due_time
+                )
+                if record is None:
+                    raise TaskNotFoundError("任务不存在")
+                result = _to_task(record)
             return result
         except TaskTitleError as error:
             raise TaskValidationError("任务标题不能为空") from error

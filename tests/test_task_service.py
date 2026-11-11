@@ -103,6 +103,43 @@ def test_complete_missing_task_raises_and_leaves_store_unchanged(database):
     assert service.list_tasks() == []
 
 
+def test_update_replaces_details_and_preserves_completion(database):
+    service = TaskService(database)
+    task = service.create_task("初稿", due_on=date(2026, 12, 18))
+    completed = service.complete_task(task.id)
+    other = service.create_task("另一项任务")
+    new_date, new_time = date(2026, 12, 20), time(17, 30)
+
+    updated = service.update_task(task.id, "  提交终稿  ", due_on=new_date, due_time=new_time)
+
+    assert (updated.title, updated.due_on, updated.due_time) == ("提交终稿", new_date, new_time)
+    assert (updated.id, updated.status, updated.created_at, updated.completed_at) == (
+        completed.id,
+        completed.status,
+        completed.created_at,
+        completed.completed_at,
+    )
+    assert set(service.list_tasks()) == {updated, other}
+
+    cleared = service.update_task(task.id, updated.title)
+    assert cleared.due_on is cleared.due_time is None
+    assert set(service.list_tasks()) == {cleared, other}
+
+
+def test_invalid_or_missing_update_leaves_stored_tasks_unchanged(database):
+    service = TaskService(database)
+    task = service.create_task("初稿", due_on=date(2026, 12, 18))
+
+    with pytest.raises(TaskValidationError, match="标题"):
+        service.update_task(task.id, "  ")
+    with pytest.raises(TaskValidationError, match="截止"):
+        service.update_task(task.id, "改标题", due_time=time(17, 30))
+    with pytest.raises(TaskNotFoundError):
+        service.update_task("missing", "改标题")
+
+    assert service.list_tasks() == [task]
+
+
 def test_commit_failure_is_translated_and_rolls_back(database, monkeypatch):
     service = TaskService(database)
 

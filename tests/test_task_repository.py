@@ -325,6 +325,32 @@ def test_mark_completed_returns_none_for_a_missing_task(database):
         assert TaskRepository(session).mark_completed("no-such-id") is None
 
 
+def test_update_details_keeps_completion_written_after_session_loaded_task(database):
+    with database.session_scope() as session:
+        task_id = TaskRepository(session).add("初稿").id
+
+    completion = dt.datetime(2026, 12, 20, 8, tzinfo=dt.UTC)
+    due_on, due_time = dt.date(2026, 12, 22), dt.time(17, 30)
+    with database.session_scope() as editing_session:
+        repository = TaskRepository(editing_session)
+        stale = repository.get(task_id)
+        assert stale.status == TASK_STATUS_PENDING
+        with database.session_scope() as completing_session:
+            TaskRepository(completing_session).mark_completed(task_id, completion)
+        assert stale.status == TASK_STATUS_PENDING
+
+        updated = repository.update_details(task_id, "终稿", due_on=due_on, due_time=due_time)
+        assert updated.status == TASK_STATUS_COMPLETED
+        assert as_utc(updated.completed_at) == completion
+        assert (updated.title, updated.due_on, updated.due_time) == ("终稿", due_on, due_time)
+
+    with database.session_scope() as session:
+        stored = TaskRepository(session).get(task_id)
+        assert (stored.title, stored.due_on, stored.due_time) == ("终稿", due_on, due_time)
+        assert stored.status == TASK_STATUS_COMPLETED
+        assert as_utc(stored.completed_at) == completion
+
+
 def test_get_returns_none_for_a_missing_task(database):
     with database.session_scope() as session:
         assert TaskRepository(session).get("no-such-id") is None

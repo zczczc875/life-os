@@ -53,7 +53,7 @@ def normalize_title(title: str) -> str:
 
 
 class TaskRepository:
-    """Create, read and complete task rows."""
+    """Create, read, edit and complete task rows."""
 
     def __init__(self, session: Session) -> None:
         self._session = session
@@ -99,6 +99,23 @@ class TaskRepository:
             TaskRecord.id.asc(),
         )
         return list(self._session.execute(statement).scalars())
+
+    def update_details(
+        self,
+        task_id: str,
+        title: str,
+        *,
+        due_on: _datetime.date | None = None,
+        due_time: _datetime.time | None = None,
+    ) -> TaskRecord | None:
+        """Replace editable fields, then read the current row."""
+        statement = (
+            update(TaskRecord)
+            .where(TaskRecord.id == task_id)
+            .values(title=normalize_title(title), due_on=due_on, due_time=due_time)
+        )
+        self._session.execute(statement, execution_options={"synchronize_session": False})
+        return self._session.get(TaskRecord, task_id, populate_existing=True)
 
     def mark_completed(
         self,
