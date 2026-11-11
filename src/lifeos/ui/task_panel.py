@@ -8,7 +8,7 @@ source of truth, so every successful mutation re-reads the list.
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import datetime
 from typing import TYPE_CHECKING, Protocol
 
 from PySide6.QtCore import Qt, QTimer
@@ -24,11 +24,13 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from lifeos.ui.task_dates import DUE_DATE_PLACEHOLDER, parse_optional_due_date
+from lifeos.ui.task_dates import format_deadline
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
-    from collections.abc import Sequence
-    from datetime import datetime
+    from collections.abc import Callable, Sequence
+    from datetime import date, time
+
+    from lifeos.ai.provider import ExtractedTask
 
 __all__ = [
     "COMPLETED_TOOLTIP",
@@ -48,6 +50,7 @@ STATUS_PENDING = "pending"
 STATUS_COMPLETED = "completed"
 
 INPUT_PLACEHOLDER = "输入任务标题，回车即可添加"
+QUICK_INPUT_PLACEHOLDER = "例如：明天下午 3 点前交报告"
 EMPTY_HINT_TEXT = "还没有任务，先添加一个吧。"
 EMPTY_TITLE_MESSAGE = "任务标题不能为空"
 NOT_FOUND_MESSAGE = "任务不存在，可能已被删除"
@@ -66,39 +69,49 @@ class TaskRecord(Protocol):
     title: str
     status: str
     due_on: date | None
+    due_time: time | None
     completed_at: datetime | None
 
 
 class TaskService(Protocol):
     """The service surface ``docs/PHASE2_TASKS.md`` defines for A."""
 
-    def create_task(self, title: str, *, due_on: date | None = None) -> TaskRecord: ...
+    def create_task(
+        self, title: str, *, due_on: date | None = None, due_time: time | None = None
+    ) -> TaskRecord: ...
 
     def list_tasks(self) -> Sequence[TaskRecord]: ...
 
     def complete_task(self, task_id: str) -> TaskRecord: ...
 
 
+def _local_minute() -> datetime:
+    return datetime.now().replace(second=0, microsecond=0)
+
+
 class TaskPanel(QWidget):
     """Render the task list and forward user actions to the service."""
 
-    def __init__(self, task_service: TaskService | None = None, parent: QWidget | None = None):
+    def __init__(
+        self,
+        task_service: TaskService | None = None,
+        parent: QWidget | None = None,
+        *,
+        quick_parse: Callable[[str], ExtractedTask] | None = None,
+    ) -> None:
         super().__init__(parent)
         self._service = task_service
+        self._quick_parse = quick_parse
         self._loading = False
-        self._rendered_on: date | None = None
+        self._rendered_at: datetime | None = None
+        self._pending_deadlines: list[datetime] = []
 
         self.task_input = QLineEdit(self)
         self.task_input.setObjectName("taskInput")
-        self.task_input.setPlaceholderText(INPUT_PLACEHOLDER)
+        self.task_input.setPlaceholderText(
+            QUICK_INPUT_PLACEHOLDER if quick_parse is not None else INPUT_PLACEHOLDER
+        )
         self.task_input.setClearButtonEnabled(True)
-
-        self.due_input = QLineEdit(self)
-        self.due_input.setObjectName("taskDueInput")
-        self.due_input.setPlaceholderText(DUE_DATE_PLACEHOLDER)
-        self.due_input.setClearButtonEnabled(True)
-        due_label = QLabel("截止日期", self)
-        due_label.setBuddy(self.due_input)
 
         self.add_button = QPushButton("添加", self)
         self.add_button.setObjectName("addTaskButton")
@@ -109,13 +122,9 @@ class TaskPanel(QWidget):
         input_row.addWidget(self.task_input, 1)
         input_row.addWidget(self.add_button)
 
-        due_row = QHBoxLayout()
-        due_row.setSpacing(8)
-        due_row.addWidget(due_label)
-        due_row.addWidget(self.due_input, 1)
-
         self.error_label = QLabel("", self)
         self.error_label.setObjectName("taskErrorLabel")
+        self.error_label.setTextFormat(Qt.TextFormat.PlainText)
         self.error_label.setWordWrap(True)
         self.error_label.setStyleSheet("color: #b42318;")
         self.error_label.setVisible(False)
@@ -134,19 +143,17 @@ class TaskPanel(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(8)
         layout.addLayout(input_row)
-        layout.addLayout(due_row)
         layout.addWidget(self.error_label)
         layout.addWidget(self.empty_label)
         layout.addWidget(self.task_list, 1)
 
         self.task_input.returnPressed.connect(self.submit_input)
-        self.due_input.returnPressed.connect(self.submit_input)
         self.add_button.clicked.connect(self.submit_input)
         self.task_list.itemChanged.connect(self._on_item_changed)
 
         self._deadline_timer = QTimer(self)
         self._deadline_timer.setInterval(60_000)
-        self._deadline_timer.timeout.connect(self._refresh_on_date_change)
+        self._deadline_timer.timeout.connect(self._refresh_on_deadline_change)
         self.set_service_available(task_service is not None)
         if task_service is not None:
             self.refresh()
@@ -156,7 +163,6 @@ class TaskPanel(QWidget):
     def set_service_available(self, available: bool) -> None:
         """Enable or disable the controls when no service is injected yet."""
         self.task_input.setEnabled(bool(available))
-        self.due_input.setEnabled(bool(available))
         self.add_button.setEnabled(bool(available))
         if not available:
             self._deadline_timer.stop()
@@ -179,7 +185,7 @@ class TaskPanel(QWidget):
             tasks = list(self._service.list_tasks())
         except Exception:  # noqa: BLE001 - the UI must not crash on storage errors
             self._render([])
-            self._rendered_on = None
+            self._rendered_at = None
             self._set_error(LOAD_FAILED_MESSAGE)
             return
         self._set_error("")
@@ -187,10 +193,10 @@ class TaskPanel(QWidget):
 
     def submit_input(self) -> None:
         """Handle Enter or a click on the add button."""
-        self.submit(self.task_input.text(), due_text=self.due_input.text())
+        self.submit(self.task_input.text())
 
-    def submit(self, text: str, *, due_text: str = "") -> None:
-        """Create a task from a title and an optional deadline."""
+    def submit(self, text: str) -> None:
+        """Create one task from the quick input."""
         title = (text or "").strip()
         if not title:
             self._set_error(EMPTY_TITLE_MESSAGE)
@@ -200,27 +206,27 @@ class TaskPanel(QWidget):
             self._set_error(SERVICE_MISSING_TEXT)
             return
         try:
-            due_on = parse_optional_due_date(due_text)
-        except ValueError as error:
-            self._set_error(str(error))
-            self.due_input.setFocus()
-            return
-        try:
-            if due_on is None:
-                self._service.create_task(title)
-            else:
+            due_on = due_time = None
+            if self._quick_parse is not None:
+                task = self._quick_parse(title)
+                title, due_on, due_time = task.title, task.due_on, task.due_time
+            if due_time is not None:
+                self._service.create_task(title, due_on=due_on, due_time=due_time)
+            elif due_on is not None:
                 self._service.create_task(title, due_on=due_on)
+            else:
+                self._service.create_task(title)
         except LookupError:
             self._set_error(NOT_FOUND_MESSAGE)
             return
         except ValueError as error:
             self._set_error(str(error).strip() or EMPTY_TITLE_MESSAGE)
+            self.task_input.setFocus()
             return
         except RuntimeError:
             self._set_error(STORAGE_MESSAGE)
             return
         self.task_input.clear()
-        self.due_input.clear()
         self.refresh()
 
     def complete(self, task_id: str) -> bool:
@@ -247,18 +253,27 @@ class TaskPanel(QWidget):
 
     # -- rendering ------------------------------------------------------
 
-    def _refresh_on_date_change(self) -> None:
-        if date.today() != self._rendered_on:
+    def _refresh_on_deadline_change(self) -> None:
+        now = _local_minute()
+        rendered_at = self._rendered_at
+        if (
+            rendered_at is None
+            or now.date() != rendered_at.date()
+            or any(
+                (now > deadline) != (rendered_at > deadline) for deadline in self._pending_deadlines
+            )
+        ):
             self.refresh()
 
     def _render(self, tasks: Sequence[TaskRecord]) -> None:
-        today = date.today()
-        self._rendered_on = today
+        now = _local_minute()
+        self._rendered_at = now
+        self._pending_deadlines.clear()
         self._loading = True
         try:
             self.task_list.clear()
             for task in tasks:
-                self.task_list.addItem(self._build_item(task, today))
+                self.task_list.addItem(self._build_item(task, now))
         finally:
             self._loading = False
         has_tasks = bool(tasks)
@@ -266,24 +281,33 @@ class TaskPanel(QWidget):
         self.empty_label.setText(EMPTY_HINT_TEXT)
         self.empty_label.setVisible(not has_tasks)
 
-    def _build_item(self, task: TaskRecord, today: date) -> QListWidgetItem:
+    def _build_item(self, task: TaskRecord, now: datetime) -> QListWidgetItem:
         completed = task.status == STATUS_COMPLETED
         completed_late = False
         text = task.title
         due_on = getattr(task, "due_on", None)
         if due_on is not None:
-            text = f"{text}  ·  截止 {due_on.isoformat()}"
+            due_time = getattr(task, "due_time", None)
+            deadline = datetime.combine(due_on, due_time) if due_time is not None else None
+            text = f"{text}  ·  截止 {format_deadline(due_on, due_time)}"
             if completed:
                 completed_at = getattr(task, "completed_at", None)
-                completed_late = (
-                    completed_at is not None and completed_at.astimezone().date() > due_on
-                )
+                if completed_at is not None:
+                    local_completed = completed_at.astimezone().replace(
+                        tzinfo=None, second=0, microsecond=0
+                    )
+                    completed_late = (
+                        local_completed > deadline if deadline else local_completed.date() > due_on
+                    )
                 if completed_late:
                     text = f"{LATE_COMPLETION_TEXT}  ·  {text}"
             elif task.status == STATUS_PENDING:
-                if due_on < today:
+                if deadline is not None:
+                    self._pending_deadlines.append(deadline)
+                overdue = now > deadline if deadline else now.date() > due_on
+                if overdue:
                     text = f"已逾期  ·  {text}"
-                elif due_on == today:
+                elif due_on == now.date():
                     text = f"今天到期  ·  {text}"
         item = QListWidgetItem(text)
         item.setData(Qt.ItemDataRole.UserRole, task.id)

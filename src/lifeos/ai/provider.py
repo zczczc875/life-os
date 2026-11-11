@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from datetime import date
+from datetime import date, time
 
 
 class ProviderError(RuntimeError):
@@ -20,6 +20,7 @@ class ExtractedTask:
 
     title: str
     due_on: date | None = None
+    due_time: time | None = None
 
 
 @dataclass(frozen=True)

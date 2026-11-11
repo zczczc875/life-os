@@ -1,6 +1,6 @@
 """Contract tests for the application task service using isolated SQLite."""
 
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime, time
 
 import pytest
 from sqlalchemy.exc import SQLAlchemyError
@@ -34,6 +34,34 @@ def test_create_trims_and_persists_detached_task(database):
     assert task.created_at.tzinfo == UTC
     assert task.completed_at is None
     assert service.list_tasks() == [task]
+
+
+def test_timed_deadline_is_preserved_when_task_is_completed(database):
+    service = TaskService(database)
+    due_on, due_time = date(2026, 12, 18), time(17, 30)
+    task = service.create_task("提交报告", due_on=due_on, due_time=due_time)
+    assert (task.due_on, task.due_time) == (due_on, due_time)
+
+    completed = service.complete_task(task.id)
+    assert (completed.due_on, completed.due_time) == (due_on, due_time)
+    assert service.list_tasks() == [completed]
+
+
+@pytest.mark.parametrize(
+    ("due_on", "due_time"),
+    [
+        (None, time(17, 30)),
+        (date(2026, 12, 18), "17:30"),
+        (date(2026, 12, 18), time(17, 30, tzinfo=UTC)),
+        (date(2026, 12, 18), time(17, 30, 59)),
+        (date(2026, 12, 18), time(17, 30, microsecond=1)),
+    ],
+)
+def test_invalid_deadline_time_never_creates_a_task(database, due_on, due_time):
+    service = TaskService(database)
+    with pytest.raises(TaskValidationError, match="截止"):
+        service.create_task("无效任务", due_on=due_on, due_time=due_time)
+    assert service.list_tasks() == []
 
 
 @pytest.mark.parametrize("title", ["", " \t\n "])

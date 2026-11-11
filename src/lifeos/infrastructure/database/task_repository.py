@@ -59,7 +59,12 @@ class TaskRepository:
         self._session = session
 
     def add(
-        self, title: str, task_id: str | None = None, *, due_on: _datetime.date | None = None
+        self,
+        title: str,
+        task_id: str | None = None,
+        *,
+        due_on: _datetime.date | None = None,
+        due_time: _datetime.time | None = None,
     ) -> TaskRecord:
         """Insert a ``pending`` task and return the stored row.
 
@@ -75,6 +80,7 @@ class TaskRepository:
             created_at=utcnow(),
             completed_at=None,
             due_on=due_on,
+            due_time=due_time,
         )
         self._session.add(record)
         # Flush so a duplicate id or constraint violation surfaces here rather

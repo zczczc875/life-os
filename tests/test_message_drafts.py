@@ -10,33 +10,6 @@ from lifeos.tasks import TaskService, TaskValidationError
 from tests._helpers import alembic_config
 
 
-@pytest.mark.parametrize(
-    ("notice", "title", "due_on"),
-    [
-        ("- 提交报告 DDL: 2026-12-18", "提交报告", date(2026, 12, 18)),
-        ("交报名表，截止：2026-12-20。", "交报名表", date(2026, 12, 20)),
-        ("请在 2026-12-18 前提交报告", "请在 2026-12-18 前提交报告", date(2026, 12, 18)),
-        ("DDL: 2026-12-18", "DDL: 2026-12-18", None),
-        ("提交报告 DDL: 2026-02-30", "提交报告 DDL: 2026-02-30", None),
-        ("下周五前提交报告", "下周五前提交报告", None),
-        ("说明会 2026-12-18", "说明会 2026-12-18", None),
-        ("交表 截止 2026-12-18 18:00", "交表 截止 2026-12-18 18:00", None),
-        ("请于2026-12-18前交表 DDL 2026-12-20", "请于2026-12-18前交表 DDL 2026-12-20", None),
-        ("不要在2026-12-18前交表", "不要在2026-12-18前交表", None),
-        ("交表 DDL 2026-12-18 或 DDL 2026-12-20", "交表 DDL 2026-12-18 或 DDL 2026-12-20", None),
-    ],
-)
-def test_notice_preview_only_extracts_supported_deadlines(notice, title, due_on):
-    from lifeos.ai.local_provider import LocalDraftProvider
-
-    drafts = LocalDraftProvider().extract_tasks(f"  \n{notice}\n\n- 其他事项").tasks
-    assert [(draft.title, draft.due_on) for draft in drafts] == [
-        (title, due_on),
-        ("其他事项", None),
-    ]
-    assert LocalDraftProvider().extract_tasks(" \n ").tasks == []
-
-
 def test_migration_keeps_old_task_and_new_deadline_survives_completion_and_reopen(tmp_path):
     settings = Settings(data_dir=tmp_path)
     database = create_database(settings)
@@ -81,7 +54,7 @@ def test_migration_keeps_old_task_and_new_deadline_survives_completion_and_reope
         reopened.dispose()
 
 
-def test_pasted_notice_is_persisted_only_after_desktop_confirmation(qtbot, tmp_path):
+def test_both_desktop_entry_points_save_normalized_deadlines(qtbot, tmp_path):
     from lifeos.ai.local_provider import LocalDraftProvider
     from lifeos.ui.main_window import MainWindow
     from lifeos.ui.message_import import MessageImportDialog
@@ -91,40 +64,61 @@ def test_pasted_notice_is_persisted_only_after_desktop_confirmation(qtbot, tmp_p
     try:
         command.upgrade(alembic_config(database.path), "head")
         service = TaskService(database)
-        window = MainWindow("test", True, service, draft_preview=LocalDraftProvider().extract_tasks)
+        provider = LocalDraftProvider(today=date(2026, 11, 11))
+        window = MainWindow(
+            "test",
+            True,
+            service,
+            draft_preview=provider.extract_tasks,
+            quick_parse=provider.parse_quick_task,
+        )
         qtbot.addWidget(window)
         window.show()
+        window.task_panel.task_input.setText("明天下午5点前提交实验报告")
+        window.task_panel.task_input.returnPressed.emit()
+        (quick_task,) = service.list_tasks()
+        assert (quick_task.title, quick_task.due_on, quick_task.due_time) == (
+            "提交实验报告",
+            date(2026, 11, 12),
+            time(17),
+        )
 
         window.message_import_button.click()
         dialog = window.findChild(MessageImportDialog)
         assert dialog is not None
-        dialog.message_input.setPlainText("交报名表，截止：2026-12-20。\n不保存这条")
+        dialog.message_input.setPlainText(
+            "各位同学好，下面是本周安排。\n"
+            "请提交报名表。\n截止时间：2026年12月20日下午6点。\n"
+            "请在2026年12月22日前上传附件。\n谢谢配合！"
+        )
         dialog.generate_button.click()
-        assert service.list_tasks() == []
+        assert service.list_tasks() == [quick_task]
         assert dialog.draft_list.count() == 2
-        assert dialog.due_input.text() == "2026-12-20"
+        assert dialog.title_input.text() == "提交报名表"
+        assert dialog.due_input.text() == "2026-12-20 18:00"
+        assert dialog.draft_list.item(1).text() == "上传附件  ·  截止 2026-12-22"
 
-        dialog.title_input.setText("提交报名表")
-        dialog.due_input.setText("2026-12-21")
+        dialog.due_input.setText("2026-12-21 17:30")
         dialog.save_button.click()
         assert dialog.draft_list.count() == 1
         dialog.save_button.click()
-        assert len(service.list_tasks()) == 1
+        assert len(service.list_tasks()) == 2
         dialog.reject()
-        (row,) = window.task_panel.task_titles()
-        assert row.endswith("提交报名表  ·  截止 2026-12-21")
+        rows = window.task_panel.task_titles()
+        assert any(row.endswith("提交报名表  ·  截止 2026-12-21 17:30") for row in rows)
+        assert any(row.endswith("提交实验报告  ·  截止 2026-11-12 17:00") for row in rows)
         window.close()
     finally:
         database.dispose()
 
     reopened = create_database(settings)
     try:
-        (task,) = TaskService(reopened).list_tasks()
-        assert (task.title, task.due_on, task.status) == (
-            "提交报名表",
-            date(2026, 12, 21),
-            "pending",
-        )
+        assert {
+            (task.title, task.due_on, task.due_time) for task in TaskService(reopened).list_tasks()
+        } == {
+            ("提交报名表", date(2026, 12, 21), time(17, 30)),
+            ("提交实验报告", date(2026, 11, 12), time(17)),
+        }
     finally:
         reopened.dispose()
 

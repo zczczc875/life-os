@@ -12,15 +12,18 @@ ever committed to ``migrations/versions/``.
 from __future__ import annotations
 
 import textwrap
+from datetime import date, time
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-from sqlalchemy import inspect
+from sqlalchemy import inspect, text
+from sqlalchemy.exc import IntegrityError
 
 from lifeos.infrastructure.database.engine import create_database
 from lifeos.infrastructure.database.models import Base
 from lifeos.infrastructure.database.repository import SettingsRepository
+from lifeos.tasks import TaskService, TaskStorageError
 from tests._helpers import alembic_config, head_revision
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -183,7 +186,66 @@ def test_models_and_migrations_do_not_drift(tmp_path: Path):
 def test_only_reviewed_revisions_are_committed():
     """Guard against a stray probe revision being committed by accident."""
     committed = sorted(path.name for path in VERSIONS_DIR.glob("*.py"))
-    assert committed == ["0001_app_settings.py", "0002_tasks.py", "0003_task_due_on.py"]
+    assert committed == [
+        "0001_app_settings.py",
+        "0002_tasks.py",
+        "0003_task_due_on.py",
+        "0004_task_due_time.py",
+    ]
+
+
+def test_deadline_time_migration_preserves_dated_and_undated_tasks(tmp_path: Path):
+    from alembic import command
+
+    database_file = tmp_path / "lifeos.sqlite3"
+    config = alembic_config(database_file)
+    command.upgrade(config, "0003_task_due_on")
+
+    database = create_database(_settings(tmp_path))
+    try:
+        with database.engine.begin() as connection:
+            connection.execute(
+                text(
+                    "INSERT INTO tasks (id, title, status, created_at, completed_at, due_on)"
+                    " VALUES ('dated', '报告', 'completed', '2026-11-10 08:00:00',"
+                    " '2026-11-11 08:00:00', '2026-11-12'),"
+                    " ('undated', '整理桌面', 'pending', '2026-11-10 09:00:00', NULL, NULL)"
+                )
+            )
+
+        service = TaskService(database)
+        with pytest.raises(TaskStorageError, match="迁移"):
+            service.list_tasks()
+
+        assert database.ensure_schema() == "0004_task_due_time"
+        undated, dated = service.list_tasks()
+        assert (undated.id, undated.title, undated.status) == ("undated", "整理桌面", "pending")
+        assert undated.due_on is undated.due_time is None
+        assert (dated.id, dated.title, dated.status) == ("dated", "报告", "completed")
+        assert dated.completed_at is not None
+        assert (dated.due_on, dated.due_time) == (date(2026, 11, 12), None)
+
+        with (
+            pytest.raises(IntegrityError, match="ck_tasks_due_time_date"),
+            database.engine.begin() as connection,
+        ):
+            connection.execute(text("UPDATE tasks SET due_time = '09:00:00' WHERE id = 'undated'"))
+        timed = service.create_task("签到", due_on=date(2026, 11, 13), due_time=time(17, 30))
+        assert timed in service.list_tasks()
+    finally:
+        database.dispose()
+
+    command.downgrade(config, "0003_task_due_on")
+    downgraded = create_database(_settings(tmp_path))
+    try:
+        with downgraded.engine.connect() as connection:
+            rows = connection.execute(text("SELECT id, due_on FROM tasks")).all()
+        assert dict(rows) == {"dated": "2026-11-12", "undated": None, timed.id: "2026-11-13"}
+        assert "due_time" not in {
+            col["name"] for col in inspect(downgraded.engine).get_columns("tasks")
+        }
+    finally:
+        downgraded.dispose()
 
 
 def test_probe_revisions_never_touch_the_source_tree(tmp_path: Path, add_follow_up_revision):

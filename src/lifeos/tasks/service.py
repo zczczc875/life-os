@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, time
 from typing import TYPE_CHECKING, Literal
 
 from sqlalchemy.exc import OperationalError, SQLAlchemyError
@@ -17,7 +17,7 @@ if TYPE_CHECKING:
 
 @dataclass(frozen=True, slots=True)
 class Task:
-    """A detached task value with timestamps normalized to UTC."""
+    """A detached task with UTC event timestamps and an optional local deadline."""
 
     id: str
     title: str
@@ -25,6 +25,7 @@ class Task:
     created_at: datetime
     completed_at: datetime | None
     due_on: date | None = None
+    due_time: time | None = None
 
 
 class TaskValidationError(ValueError):
@@ -53,15 +54,19 @@ def _to_task(record: TaskRecord) -> Task:
         created_at=_utc(record.created_at),
         completed_at=_utc(record.completed_at) if record.completed_at is not None else None,
         due_on=record.due_on,
+        due_time=record.due_time,
     )
 
 
 def _storage_error(error: Exception) -> TaskStorageError:
     if isinstance(error, OperationalError):
         detail = str(error.orig).lower()
-        if detail == "no such table: tasks" or detail in (
+        if detail in (
+            "no such table: tasks",
             "no such column: tasks.due_on",
+            "no such column: tasks.due_time",
             "table tasks has no column named due_on",
+            "table tasks has no column named due_time",
         ):
             return TaskStorageError(
                 "任务数据表需要更新，请先执行数据库迁移：python -m alembic upgrade head"
@@ -75,14 +80,28 @@ class TaskService:
     def __init__(self, database: Database) -> None:
         self._database = database
 
-    def create_task(self, title: str, *, due_on: date | None = None) -> Task:
+    def create_task(
+        self, title: str, *, due_on: date | None = None, due_time: time | None = None
+    ) -> Task:
         if not isinstance(title, str) or not title.strip():
             raise TaskValidationError("任务标题不能为空")
         if due_on is not None and (not isinstance(due_on, date) or isinstance(due_on, datetime)):
             raise TaskValidationError("截止日期必须是有效的日历日期")
+        if due_time is not None:
+            if due_on is None:
+                raise TaskValidationError("填写截止时间时也需要截止日期")
+            if (
+                not isinstance(due_time, time)
+                or due_time.tzinfo is not None
+                or due_time.second
+                or due_time.microsecond
+            ):
+                raise TaskValidationError("截止时间必须是精确到分钟的本地时间")
         try:
             with self._database.session_scope() as session:
-                result = _to_task(TaskRepository(session).add(title.strip(), due_on=due_on))
+                result = _to_task(
+                    TaskRepository(session).add(title.strip(), due_on=due_on, due_time=due_time)
+                )
             return result
         except TaskTitleError as error:
             raise TaskValidationError("任务标题不能为空") from error

@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import datetime as _datetime
 
-from sqlalchemy import CheckConstraint, Date, DateTime, Index, String, Text
+from sqlalchemy import CheckConstraint, Date, DateTime, Index, String, Text, Time
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 __all__ = [
@@ -93,7 +93,7 @@ class TaskRecord(Base):
     """A single task row.
 
     Timestamps are naive UTC to match the SQLite convention. The optional
-    deadline is a calendar date, independent of time zones.
+    deadline is a calendar date with an optional local wall-clock time.
     """
 
     __tablename__ = "tasks"
@@ -112,6 +112,14 @@ class TaskRecord(Base):
     )
     completed_at: Mapped[_datetime.datetime | None] = mapped_column(DateTime, nullable=True)
     due_on: Mapped[_datetime.date | None] = mapped_column(Date, nullable=True)
+    due_time: Mapped[_datetime.time | None] = mapped_column(
+        Time,
+        CheckConstraint(
+            "due_time IS NULL OR due_on IS NOT NULL",
+            name="ck_tasks_due_time_date",
+        ),
+        nullable=True,
+    )
 
     __table_args__ = (
         # Reject unknown states at the storage layer, so a service bug cannot

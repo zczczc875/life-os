@@ -10,7 +10,7 @@ import os
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from dataclasses import dataclass, field
-from datetime import date, datetime
+from datetime import UTC, date, datetime, time
 
 import pytest
 from PySide6.QtCore import Qt, QTimer
@@ -51,6 +51,7 @@ class TaskDouble:
     status: str = STATUS_PENDING
     due_on: date | None = None
     completed_at: datetime | None = None
+    due_time: time | None = None
 
 
 @dataclass
@@ -65,7 +66,9 @@ class FakeTaskService:
     completed_ids: list[str] = field(default_factory=list)
     _next_id: int = 0
 
-    def create_task(self, title: str, *, due_on: date | None = None) -> TaskDouble:
+    def create_task(
+        self, title: str, *, due_on: date | None = None, due_time: time | None = None
+    ) -> TaskDouble:
         stripped = title.strip()
         if not stripped:
             raise TaskValidationError(EMPTY_TITLE_MESSAGE)
@@ -73,7 +76,9 @@ class FakeTaskService:
             raise TaskStorageError("write failed")
         self.created_titles.append(stripped)
         self._next_id += 1
-        task = TaskDouble(id=f"task-{self._next_id}", title=stripped, due_on=due_on)
+        task = TaskDouble(
+            id=f"task-{self._next_id}", title=stripped, due_on=due_on, due_time=due_time
+        )
         self.tasks.append(task)
         return task
 
@@ -104,14 +109,8 @@ def panel(qtbot):
 
 
 def test_deadline_hints_follow_the_local_day_and_task_status(qtbot, monkeypatch):
-    today = date(2026, 12, 9)
-
-    class LocalDate(date):
-        @classmethod
-        def today(cls):
-            return today
-
-    monkeypatch.setattr(task_panel, "date", LocalDate, raising=False)
+    now = datetime(2026, 12, 9, 23, 59)
+    monkeypatch.setattr(task_panel, "_local_minute", lambda: now)
     service = FakeTaskService(
         tasks=[
             TaskDouble("past", "交报告", due_on=date(2026, 12, 8)),
@@ -131,7 +130,7 @@ def test_deadline_hints_follow_the_local_day_and_task_status(qtbot, monkeypatch)
         "买菜",
     ]
 
-    today = date(2026, 12, 10)
+    now = datetime(2026, 12, 10)
     timer = widget.findChild(QTimer)
     assert timer is not None and timer.isActive()
     service.fail_list = True
@@ -149,6 +148,46 @@ def test_deadline_hints_follow_the_local_day_and_task_status(qtbot, monkeypatch)
     widget.task_list.item(2).setCheckState(Qt.CheckState.Checked)
     assert widget.task_titles()[2] == "报名  ·  截止 2026-12-10"
     assert service.completed_ids == ["later"]
+
+
+def test_exact_deadlines_change_at_the_next_minute_and_use_local_completion(qtbot, monkeypatch):
+    now = datetime(2026, 12, 9, 14, 29)
+    monkeypatch.setattr(task_panel, "_local_minute", lambda: now)
+    due_on = now.date()
+    due_time = time(14, 30)
+    completed_on_time = datetime(2026, 12, 9, 14, 30, 59).astimezone(UTC)
+    completed_late = datetime(2026, 12, 9, 14, 31).astimezone(UTC)
+    service = FakeTaskService(
+        tasks=[
+            TaskDouble("pending", "交报告", due_on=due_on, due_time=due_time),
+            TaskDouble(
+                "done",
+                "交表",
+                STATUS_COMPLETED,
+                due_on,
+                completed_on_time,
+                due_time,
+            ),
+            TaskDouble("late", "报名", STATUS_COMPLETED, due_on, completed_late, due_time),
+        ]
+    )
+    widget = TaskPanel(service)
+    qtbot.addWidget(widget)
+    assert widget.task_titles() == [
+        "今天到期  ·  交报告  ·  截止 2026-12-09 14:30",
+        "交表  ·  截止 2026-12-09 14:30",
+        "逾期完成  ·  报名  ·  截止 2026-12-09 14:30",
+    ]
+
+    timer = widget.findChild(QTimer)
+    now = datetime(2026, 12, 9, 14, 30)
+    timer.timeout.emit()
+    assert widget.task_titles()[0].startswith("今天到期")
+    now = datetime(2026, 12, 9, 14, 31)
+    timer.timeout.emit()
+    assert widget.task_titles()[0] == "已逾期  ·  交报告  ·  截止 2026-12-09 14:30"
+    assert widget.task_list.item(1).font().strikeOut()
+    assert not widget.task_list.item(2).font().strikeOut()
 
 
 def test_empty_state_shows_hint_and_hides_list(qtbot):
@@ -187,29 +226,39 @@ def test_enter_key_adds_a_task(panel):
     assert panel.task_titles() == ["写周报"]
 
 
-def test_manual_deadline_survives_errors_and_clears_after_retry(panel, qtbot):
-    panel.task_input.setText("写实验报告")
-    panel.due_input.setText("2026-02-29")
+def test_quick_entry_keeps_input_on_errors_and_persists_one_parsed_task(qtbot):
+    def quick_parse(text):
+        if text == "2026-02-29 前写实验报告":
+            raise ValueError("截止日期无效")
+        assert text == "2000-02-29 下午三点半前写实验报告"
+        return ExtractedTask("写实验报告", date(2000, 2, 29), time(15, 30))
+
+    service = FakeTaskService()
+    window = MainWindow("test", True, task_service=service, quick_parse=quick_parse)
+    qtbot.addWidget(window)
+    panel = window.task_panel
+    panel.task_input.setText("2026-02-29 前写实验报告")
     panel.add_button.click()
 
-    assert panel._service.tasks == []
-    assert "YYYY-MM-DD" in panel.error_message()
-    assert panel.due_input.text() == "2026-02-29"
+    assert service.tasks == []
+    assert panel.error_message() == "截止日期无效"
+    assert panel.task_input.text() == "2026-02-29 前写实验报告"
 
-    panel.due_input.setText("2000-02-29")
-    panel._service.fail_create = True
-    qtbot.keyClick(panel.due_input, Qt.Key.Key_Return)
+    panel.task_input.setText("2000-02-29 下午三点半前写实验报告")
+    service.fail_create = True
+    qtbot.keyClick(panel.task_input, Qt.Key.Key_Return)
 
     assert panel.error_message() == STORAGE_MESSAGE
-    assert panel.task_input.text() == "写实验报告"
-    assert panel.due_input.text() == "2000-02-29"
+    assert panel.task_input.text() == "2000-02-29 下午三点半前写实验报告"
 
-    panel._service.fail_create = False
-    qtbot.keyClick(panel.due_input, Qt.Key.Key_Return)
+    service.fail_create = False
+    qtbot.keyClick(panel.task_input, Qt.Key.Key_Return)
 
-    assert [task.due_on for task in panel._service.tasks] == [date(2000, 2, 29)]
-    assert panel.task_titles() == ["已逾期  ·  写实验报告  ·  截止 2000-02-29"]
-    assert panel.task_input.text() == panel.due_input.text() == ""
+    assert [(task.title, task.due_on, task.due_time) for task in service.tasks] == [
+        ("写实验报告", date(2000, 2, 29), time(15, 30)),
+    ]
+    assert panel.task_titles() == ["已逾期  ·  写实验报告  ·  截止 2000-02-29 15:30"]
+    assert panel.task_input.text() == ""
     assert panel.error_message() == ""
 
 
@@ -306,7 +355,6 @@ def test_panel_without_service_is_disabled(qtbot):
     qtbot.addWidget(widget)
 
     assert widget.task_input.isEnabled() is False
-    assert widget.due_input.isEnabled() is False
     assert widget.add_button.isEnabled() is False
     assert widget.empty_label.text() == SERVICE_MISSING_TEXT
 
@@ -319,9 +367,10 @@ def test_main_window_hosts_the_task_panel(qtbot):
     assert window.findChild(QLineEdit, "taskInput") is window.task_panel.task_input
     assert window.tasks_heading_label.text() == TASKS_HEADING
 
-    window.task_panel.submit("整理桌面")
-    assert service.created_titles == ["整理桌面"]
-    assert window.task_panel.task_titles() == ["整理桌面"]
+    assert window.findChild(QLineEdit, "taskDueInput") is None
+    window.task_panel.submit("明天整理桌面")
+    assert service.created_titles == ["明天整理桌面"]
+    assert window.task_panel.task_titles() == ["明天整理桌面"]
 
 
 def test_main_window_without_service_still_builds(qtbot):
@@ -349,7 +398,7 @@ def test_message_preview_saves_only_the_confirmed_draft_and_refreshes_tasks(qtbo
     def preview(message):
         received.append(message)
         return TaskExtractionResponse(
-            [ExtractedTask("提交初稿", due_on=date(2026, 12, 8)), ExtractedTask("带电脑")]
+            [ExtractedTask("提交初稿", date(2026, 12, 8), time(14, 30)), ExtractedTask("带电脑")]
         )
 
     window, dialog = _open_message_import(qtbot, service, preview)
@@ -359,20 +408,23 @@ def test_message_preview_saves_only_the_confirmed_draft_and_refreshes_tasks(qtbo
     assert received == ["通知 <b>原文</b>"]
     assert service.tasks == []
     assert dialog.draft_list.count() == 2
-    assert dialog.due_input.text() == "2026-12-08"
+    assert dialog.due_input.text() == "2026-12-08 14:30"
+    assert dialog.draft_list.item(0).text() == "提交初稿  ·  截止 2026-12-08 14:30"
+    assert dialog.draft_list.item(1).text() == "带电脑  ·  未设截止时间"
 
     dialog.title_input.setText("提交期末报告")
-    dialog.due_input.setText("2026-12-09")
+    dialog.due_input.setText("2026-12-09 15:00")
     dialog.draft_list.setCurrentRow(1)
     dialog.draft_list.setCurrentRow(0)
     assert dialog.title_input.text() == "提交期末报告"
-    assert dialog.due_input.text() == "2026-12-09"
+    assert dialog.due_input.text() == "2026-12-09 15:00"
+    assert dialog.draft_list.item(0).text() == "提交期末报告  ·  截止 2026-12-09 15:00"
     dialog.save_button.click()
 
-    assert [(task.title, task.due_on) for task in service.tasks] == [
-        ("提交期末报告", date(2026, 12, 9)),
+    assert [(task.title, task.due_on, task.due_time) for task in service.tasks] == [
+        ("提交期末报告", date(2026, 12, 9), time(15)),
     ]
-    assert window.task_panel.task_list.item(0).text().endswith("提交期末报告  ·  截止 2026-12-09")
+    assert window.task_panel.task_titles()[0].endswith("提交期末报告  ·  截止 2026-12-09 15:00")
     assert dialog.draft_list.count() == 1
     assert not dialog.save_button.isEnabled()
     dialog.draft_list.setCurrentRow(0)
@@ -394,22 +446,32 @@ def test_message_import_keeps_draft_after_invalid_date_and_save_failure(qtbot):
     )
     dialog.message_input.setPlainText("写实验报告")
     dialog.generate_button.click()
-    dialog.due_input.setText("2026-02-29")
-    dialog.save_button.click()
+    for invalid in (
+        "2026-02-29",
+        "2028-02-29 24:00",
+        "2028-02-29 9:30",
+        "2028-02-29 09:30:00",
+        "2028-02-29 09:30+08:00",
+        "2028-02-29T09:30",
+    ):
+        dialog.due_input.setText(invalid)
+        dialog.save_button.click()
+        assert service.tasks == []
+        assert "YYYY-MM-DD" in dialog.feedback_label.text()
+        assert dialog.due_input.text() == invalid
+        assert dialog.draft_list.item(0).text() == "写实验报告  ·  截止时间格式有误"
 
-    assert service.tasks == []
-    assert "YYYY-MM-DD" in dialog.feedback_label.text()
-
-    dialog.due_input.setText("2028-02-29")
+    dialog.due_input.setText("2028-02-29 09:30")
     dialog.save_button.click()
     assert service.tasks == []
     assert "保存失败" in dialog.feedback_label.text()
     assert dialog.draft_list.count() == 1
-    assert dialog.due_input.text() == "2028-02-29"
+    assert dialog.due_input.text() == "2028-02-29 09:30"
 
     service.fail_create = False
     dialog.save_button.click()
     assert service.created_titles == ["写实验报告"]
+    assert service.tasks[0].due_time == time(9, 30)
     assert dialog.draft_list.count() == 0
     assert not dialog.save_button.isEnabled()
 

@@ -19,7 +19,7 @@ from PySide6.QtWidgets import (
 )
 
 from lifeos.ai.provider import ProviderError
-from lifeos.ui.task_dates import DUE_DATE_PLACEHOLDER, parse_optional_due_date
+from lifeos.ui.task_dates import DUE_DATE_PLACEHOLDER, format_deadline, parse_optional_deadline
 from lifeos.ui.task_panel import EMPTY_TITLE_MESSAGE, STORAGE_MESSAGE
 
 if TYPE_CHECKING:
@@ -67,7 +67,7 @@ class MessageImportDialog(QDialog):
 
         editors = QFormLayout()
         editors.addRow("任务标题", self.title_input)
-        editors.addRow("截止日期", self.due_input)
+        editors.addRow("截止时间", self.due_input)
         buttons = QHBoxLayout()
         buttons.addStretch()
         buttons.addWidget(self.save_button)
@@ -109,13 +109,13 @@ class MessageImportDialog(QDialog):
             title = draft.title.strip()
             if not title:
                 continue
-            due_text = draft.due_on.isoformat() if draft.due_on else ""
-            item = QListWidgetItem(title)
-            item.setData(Qt.ItemDataRole.UserRole, (title, due_text))
+            due_text = format_deadline(draft.due_on, draft.due_time)
+            item = QListWidgetItem()
+            self._set_draft(item, title, due_text)
             self.draft_list.addItem(item)
         if self.draft_list.count():
             self.draft_list.setCurrentRow(0)
-            self.feedback_label.setText("选中草稿后，可编辑标题和日期，再保存为任务。")
+            self.feedback_label.setText("选中草稿后，可编辑标题和截止时间，再保存为任务。")
         else:
             self.feedback_label.setText("没有生成可保存的任务草稿。")
 
@@ -130,9 +130,19 @@ class MessageImportDialog(QDialog):
     def _store_edits(self) -> None:
         item = self.draft_list.currentItem()
         if item is not None:
-            title = self.title_input.text()
-            item.setData(Qt.ItemDataRole.UserRole, (title, self.due_input.text()))
-            item.setText(title.strip() or "（未填写标题）")
+            self._set_draft(item, self.title_input.text(), self.due_input.text())
+
+    @staticmethod
+    def _set_draft(item: QListWidgetItem, title: str, due_text: str) -> None:
+        item.setData(Qt.ItemDataRole.UserRole, (title, due_text))
+        display_title = title.strip() or "（未填写标题）"
+        try:
+            deadline = format_deadline(*parse_optional_deadline(due_text))
+        except ValueError:
+            deadline_label = "截止时间格式有误"
+        else:
+            deadline_label = f"截止 {deadline}" if deadline else "未设截止时间"
+        item.setText(f"{display_title}  ·  {deadline_label}")
 
     def _save_selected(self) -> None:
         row = self.draft_list.currentRow()
@@ -144,13 +154,16 @@ class MessageImportDialog(QDialog):
             return
 
         try:
-            due_on = parse_optional_due_date(self.due_input.text())
+            due_on, due_time = parse_optional_deadline(self.due_input.text())
         except ValueError as error:
             self.feedback_label.setText(str(error))
             return
 
         try:
-            self._task_service.create_task(title, due_on=due_on)
+            if due_time is None:
+                self._task_service.create_task(title, due_on=due_on)
+            else:
+                self._task_service.create_task(title, due_on=due_on, due_time=due_time)
         except (ValueError, RuntimeError):
             self.feedback_label.setText(STORAGE_MESSAGE)
             return

@@ -19,7 +19,7 @@ from lifeos.ui.task_panel import TaskPanel, TaskService
 if TYPE_CHECKING:
     from collections.abc import Callable
 
-    from lifeos.ai.provider import TaskExtractionResponse
+    from lifeos.ai.provider import ExtractedTask, TaskExtractionResponse
 
 APP_NAME = "LifeOS"
 WELCOME_TEXT = "欢迎使用 LifeOS，从今天开始整理你的生活。"
@@ -38,6 +38,7 @@ class MainWindow(QMainWindow):
         task_service: TaskService | None = None,
         *,
         draft_preview: Callable[[str], TaskExtractionResponse] | None = None,
+        quick_parse: Callable[[str], ExtractedTask] | None = None,
     ) -> None:
         super().__init__()
         self._app_version = app_version
@@ -62,7 +63,7 @@ class MainWindow(QMainWindow):
         heading_font.setBold(True)
         self.tasks_heading_label.setFont(heading_font)
 
-        self.task_panel = TaskPanel(task_service, self)
+        self.task_panel = TaskPanel(task_service, self, quick_parse=quick_parse)
         tasks_header = QHBoxLayout()
         tasks_header.addWidget(self.tasks_heading_label, 1)
         if task_service is not None and draft_preview is not None:

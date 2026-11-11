@@ -26,9 +26,9 @@ def main() -> int:
         if database_status:
             try:
                 inspector = inspect(database.engine)
-                has_task_schema = inspector.has_table("tasks") and any(
-                    column["name"] == "due_on" for column in inspector.get_columns("tasks")
-                )
+                has_task_schema = inspector.has_table("tasks") and {"due_on", "due_time"} <= {
+                    column["name"] for column in inspector.get_columns("tasks")
+                }
             except SQLAlchemyError:
                 database_status = False
                 has_task_schema = False
@@ -42,11 +42,13 @@ def main() -> int:
                     "请在项目目录运行 python -m alembic upgrade head，"
                     "然后重新启动 LifeOS。",
                 )
+        provider = LocalDraftProvider() if task_service is not None else None
         window = MainWindow(
             settings.app_version,
             database_status,
             task_service=task_service,
-            draft_preview=LocalDraftProvider().extract_tasks if task_service is not None else None,
+            draft_preview=provider.extract_tasks if provider is not None else None,
+            quick_parse=provider.parse_quick_task if provider is not None else None,
         )
         window.show()
         return application.exec()

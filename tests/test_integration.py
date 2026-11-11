@@ -1,6 +1,7 @@
 """Exercise the composition root with isolated component doubles."""
 
 import sys
+from datetime import time
 from types import ModuleType, SimpleNamespace
 
 import pytest
@@ -43,14 +44,19 @@ def test_startup_order_and_status(monkeypatch, connected):
             return 0
 
     class Window:
-        def __init__(self, version, status, *, task_service, draft_preview):
+        def __init__(self, version, status, *, task_service, draft_preview, quick_parse):
             assert (version, status) == ("test-version", connected)
             assert (task_service is not None) is connected
             assert (draft_preview is not None) is connected
+            assert (quick_parse is not None) is connected
             if draft_preview is not None:
                 [draft] = draft_preview("交表 DDL: 2026-12-18").tasks
                 assert draft.title == "交表"
                 assert draft.due_on.isoformat() == "2026-12-18"
+                quick_task = quick_parse("2026年12月18日17:30前提交实验报告")
+                assert quick_task.title == "提交实验报告"
+                assert quick_task.due_on.isoformat() == "2026-12-18"
+                assert quick_task.due_time == time(17, 30)
             calls.append("window")
 
         def show(self):
@@ -76,7 +82,7 @@ def test_startup_order_and_status(monkeypatch, connected):
 
         def get_columns(self, name):
             assert name == "tasks"
-            return [{"name": "due_on"}]
+            return [{"name": "due_on"}, {"name": "due_time"}]
 
     monkeypatch.setattr(sqlalchemy, "inspect", lambda engine: Inspector())
     _install(monkeypatch, "PySide6.QtWidgets", QApplication=Application, QMessageBox=object)
@@ -124,7 +130,7 @@ def test_disposes_database_on_connection_error(monkeypatch):
     assert calls == ["dispose"]
 
 
-@pytest.mark.parametrize("revision", [None, "0002_tasks"])
+@pytest.mark.parametrize("revision", [None, "0002_tasks", "0003_task_due_on"])
 def test_unmigrated_database_prompts_and_disables_tasks(qapp, monkeypatch, tmp_path, revision):
     from alembic import command
     from PySide6.QtWidgets import QApplication, QMessageBox
