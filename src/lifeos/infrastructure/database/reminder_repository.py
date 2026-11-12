@@ -6,7 +6,6 @@ from datetime import time
 from typing import TYPE_CHECKING
 
 from sqlalchemy import Time, func, literal, select, update
-from sqlalchemy.dialects.sqlite import insert
 
 from lifeos.infrastructure.database.models import (
     TASK_STATUS_PENDING,
@@ -34,13 +33,7 @@ class ReminderRepository:
 
     def set_enabled(self, enabled: bool) -> None:
         value = "true" if enabled else "false"
-        statement = insert(AppSetting).values(key=_ENABLED_KEY, value=value)
-        self._session.execute(
-            statement.on_conflict_do_update(
-                index_elements=[AppSetting.key],
-                set_={"value": value, "updated_at": utcnow()},
-            )
-        )
+        SettingsRepository(self._session).upsert(_ENABLED_KEY, value)
 
     def claim_due(self, now: datetime) -> list[TaskRecord]:
         """Check opt-in, eligibility and deduplication in a single write."""

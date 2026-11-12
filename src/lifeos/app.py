@@ -10,6 +10,7 @@ def main() -> int:
     from sqlalchemy.exc import SQLAlchemyError
 
     from lifeos.ai.local_provider import LocalDraftProvider
+    from lifeos.config.close_preferences import ClosePreferences
     from lifeos.config.settings import get_settings
     from lifeos.infrastructure.database.engine import create_database
     from lifeos.infrastructure.logging.setup import setup_logging
@@ -53,6 +54,7 @@ def main() -> int:
             draft_preview=provider.extract_tasks if provider is not None else None,
             quick_parse=provider.parse_quick_task if provider is not None else None,
             reminder_service=ReminderService(database) if task_service is not None else None,
+            close_preferences=ClosePreferences(database) if task_service is not None else None,
         )
         window.show()
         return application.exec()

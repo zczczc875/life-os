@@ -21,6 +21,7 @@ def test_startup_order_and_status(monkeypatch, connected):
     calls = []
     settings = SimpleNamespace(app_version="test-version")
     expected_reminders = object()
+    expected_close_preferences = object()
 
     class Database:
         engine = object()
@@ -46,13 +47,22 @@ def test_startup_order_and_status(monkeypatch, connected):
 
     class Window:
         def __init__(
-            self, version, status, *, task_service, draft_preview, quick_parse, reminder_service
+            self,
+            version,
+            status,
+            *,
+            task_service,
+            draft_preview,
+            quick_parse,
+            reminder_service,
+            close_preferences,
         ):
             assert (version, status) == ("test-version", connected)
             assert (task_service is not None) is connected
             assert (draft_preview is not None) is connected
             assert (quick_parse is not None) is connected
             assert reminder_service is (expected_reminders if connected else None)
+            assert close_preferences is (expected_close_preferences if connected else None)
             if draft_preview is not None:
                 [draft] = draft_preview("交表 DDL: 2026-12-18").tasks
                 assert draft.title == "交表"
@@ -90,6 +100,11 @@ def test_startup_order_and_status(monkeypatch, connected):
 
     monkeypatch.setattr(sqlalchemy, "inspect", lambda engine: Inspector())
     _install(monkeypatch, "PySide6.QtWidgets", QApplication=Application, QMessageBox=object)
+    _install(
+        monkeypatch,
+        "lifeos.config.close_preferences",
+        ClosePreferences=lambda database: expected_close_preferences,
+    )
     _install(monkeypatch, "lifeos.config.settings", get_settings=get_settings)
     _install(monkeypatch, "lifeos.infrastructure.database.engine", create_database=create_database)
     _install(monkeypatch, "lifeos.infrastructure.logging.setup", setup_logging=setup_logging)
@@ -122,6 +137,7 @@ def test_disposes_database_on_connection_error(monkeypatch):
             calls.append("dispose")
 
     _install(monkeypatch, "PySide6.QtWidgets", QApplication=object, QMessageBox=object)
+    _install(monkeypatch, "lifeos.config.close_preferences", ClosePreferences=object)
     _install(monkeypatch, "lifeos.config.settings", get_settings=lambda: object())
     _install(
         monkeypatch, "lifeos.infrastructure.database.engine", create_database=lambda _: Database()
@@ -154,6 +170,7 @@ def test_unmigrated_database_prompts_and_disables_tasks(qapp, monkeypatch, tmp_p
     original_window = main_window.MainWindow
 
     def capture_window(*args, **kwargs):
+        assert kwargs["close_preferences"] is None
         window = original_window(*args, **kwargs)
         windows.append(window)
         return window

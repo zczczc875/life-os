@@ -1,4 +1,4 @@
-"""Poll local reminders while the LifeOS window is running."""
+"""Poll local reminders while LifeOS is running."""
 
 from __future__ import annotations
 
@@ -7,10 +7,8 @@ from typing import TYPE_CHECKING
 
 from PySide6.QtCore import QSignalBlocker, Qt, QTimer
 from PySide6.QtWidgets import (
-    QApplication,
     QCheckBox,
     QLabel,
-    QStyle,
     QSystemTrayIcon,
     QVBoxLayout,
     QWidget,
@@ -23,9 +21,12 @@ if TYPE_CHECKING:
 
 
 class ReminderPanel(QWidget):
-    def __init__(self, service: ReminderService, parent: QWidget | None = None) -> None:
+    def __init__(
+        self, service: ReminderService, tray: QSystemTrayIcon, parent: QWidget | None = None
+    ) -> None:
         super().__init__(parent)
         self._service = service
+        self._tray = tray
         self._last_reminder = ""
 
         self.checkbox = QCheckBox("到期提醒", self)
@@ -42,14 +43,8 @@ class ReminderPanel(QWidget):
         layout.addWidget(self.checkbox)
         layout.addWidget(self.status)
 
-        icon = QApplication.windowIcon()
-        if icon.isNull():
-            icon = self.style().standardIcon(QStyle.StandardPixmap.SP_MessageBoxInformation)
-        self._tray = QSystemTrayIcon(icon, self)
-        self._tray.setToolTip("LifeOS 到期提醒")
-        self._tray.messageClicked.connect(self._show_window)
-
         self._timer = QTimer(self)
+        self._timer.setObjectName("deadlineReminderTimer")
         self._timer.setInterval(15_000)
         self._timer.timeout.connect(self._scan)
         try:
@@ -75,15 +70,12 @@ class ReminderPanel(QWidget):
             self._scan()
         else:
             self._timer.stop()
-            self._tray.hide()
             self._last_reminder = ""
             self._show_status("")
 
     def _scan(self) -> None:
         if not self.checkbox.isChecked():
             return
-        can_notify = QSystemTrayIcon.isSystemTrayAvailable() and QSystemTrayIcon.supportsMessages()
-        self._tray.setVisible(can_notify)
         try:
             tasks = self._service.claim_due(datetime.now())
         except TaskStorageError:
@@ -95,17 +87,11 @@ class ReminderPanel(QWidget):
                 task.title if len(task.title) <= 48 else f"{task.title[:47]}…" for task in tasks[:2]
             ]
             self._last_reminder = f"{len(tasks)} 项任务已到期 · {'、'.join(titles)}"
-            if can_notify:
+            if QSystemTrayIcon.isSystemTrayAvailable() and QSystemTrayIcon.supportsMessages():
+                self._tray.show()
                 self._tray.showMessage("LifeOS 到期提醒", self._last_reminder)
         self._show_status(self._last_reminder)
 
     def _show_status(self, message: str) -> None:
         self.status.setText(message)
         self.status.setVisible(bool(message))
-
-    def _show_window(self) -> None:
-        window = self.window()
-        if window.isMinimized():
-            window.showNormal()
-        window.raise_()
-        window.activateWindow()

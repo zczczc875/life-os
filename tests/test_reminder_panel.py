@@ -28,7 +28,7 @@ class ReminderService:
 def test_toggling_reminders_starts_and_stops_scanning(qtbot, monkeypatch):
     monkeypatch.setattr(QSystemTrayIcon, "isSystemTrayAvailable", lambda: False)
     service = ReminderService()
-    panel = ReminderPanel(service)
+    panel = ReminderPanel(service, QSystemTrayIcon())
     qtbot.addWidget(panel)
     panel.show()
     checkbox = panel.findChild(QCheckBox)
@@ -48,7 +48,7 @@ def test_enabled_reminders_check_on_startup_and_display_in_window(qtbot, monkeyp
     monkeypatch.setattr(QSystemTrayIcon, "isSystemTrayAvailable", lambda: False)
     service = ReminderService(enabled=True)
     service.tasks = [SimpleNamespace(title="<b>补交报告</b>")]
-    panel = ReminderPanel(service)
+    panel = ReminderPanel(service, QSystemTrayIcon())
     qtbot.addWidget(panel)
     panel.show()
     assert panel.findChild(QCheckBox).isChecked()
@@ -69,7 +69,7 @@ def test_due_tasks_send_one_windows_notification_for_the_batch(qtbot, monkeypatc
     )
     service = ReminderService()
     service.tasks = [SimpleNamespace(title=title) for title in ("报告", "交表", "交费")]
-    panel = ReminderPanel(service)
+    panel = ReminderPanel(service, QSystemTrayIcon())
     qtbot.addWidget(panel)
     panel.show()
 

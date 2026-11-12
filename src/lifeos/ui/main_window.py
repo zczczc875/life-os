@@ -11,8 +11,22 @@ from typing import TYPE_CHECKING
 
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QFont
-from PySide6.QtWidgets import QHBoxLayout, QLabel, QMainWindow, QPushButton, QVBoxLayout, QWidget
+from PySide6.QtWidgets import (
+    QApplication,
+    QHBoxLayout,
+    QLabel,
+    QMainWindow,
+    QMenu,
+    QMessageBox,
+    QPushButton,
+    QStyle,
+    QSystemTrayIcon,
+    QVBoxLayout,
+    QWidget,
+)
 
+from lifeos.config.close_preferences import ClosePreferencesError
+from lifeos.ui.close_dialog import CloseDialog
 from lifeos.ui.daily_plan import DailyPlanDialog
 from lifeos.ui.message_import import MessageImportDialog
 from lifeos.ui.reminders import ReminderPanel
@@ -21,7 +35,10 @@ from lifeos.ui.task_panel import TaskPanel, TaskService
 if TYPE_CHECKING:
     from collections.abc import Callable
 
+    from PySide6.QtGui import QCloseEvent
+
     from lifeos.ai.provider import ExtractedTask, TaskExtractionResponse
+    from lifeos.config.close_preferences import CloseAction, ClosePreferences
     from lifeos.tasks.reminders import ReminderService
 
 APP_NAME = "LifeOS"
@@ -43,14 +60,23 @@ class MainWindow(QMainWindow):
         draft_preview: Callable[[str], TaskExtractionResponse] | None = None,
         quick_parse: Callable[[str], ExtractedTask] | None = None,
         reminder_service: ReminderService | None = None,
+        close_preferences: ClosePreferences | None = None,
     ) -> None:
         super().__init__()
         self._app_version = app_version
         self._database_status = bool(database_status)
+        self._close_preferences = close_preferences
+        self._quit_requested = False
 
         self.setWindowTitle(f"{APP_NAME} {app_version}")
         self.resize(560, 640)
         self.setMinimumSize(460, 420)
+        self._tray = self._build_tray()
+        if close_preferences is not None:
+            settings_menu = self.menuBar().addMenu("设置")
+            restore_prompt = settings_menu.addAction("恢复关闭提示")
+            restore_prompt.setObjectName("resetCloseAction")
+            restore_prompt.triggered.connect(lambda: self._save_close_action(None))
 
         self.title_label = self._build_label("titleLabel", APP_NAME)
         title_font = QFont(self.title_label.font())
@@ -95,7 +121,7 @@ class MainWindow(QMainWindow):
         layout.addLayout(tasks_header)
         layout.addWidget(self.task_panel, 1)
         if reminder_service is not None:
-            layout.addWidget(ReminderPanel(reminder_service, self))
+            layout.addWidget(ReminderPanel(reminder_service, self._tray, self))
         layout.addWidget(self.status_label)
 
         central_widget = QWidget(self)
@@ -104,6 +130,82 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(central_widget)
 
         self._render_database_status()
+
+    def closeEvent(self, event: QCloseEvent) -> None:
+        if self._quit_requested or self._close_preferences is None:
+            self._tray.hide()
+            super().closeEvent(event)
+            return
+
+        event.ignore()
+        try:
+            action = self._close_preferences.get()
+        except ClosePreferencesError:
+            action = None
+        tray_available = QSystemTrayIcon.isSystemTrayAvailable()
+        remember = False
+        if action is None or (action == "tray" and not tray_available):
+            dialog = CloseDialog(tray_available, self)
+            dialog.exec()
+            action = dialog.action
+            remember = dialog.remember.isChecked()
+            dialog.deleteLater()
+        if action is None:
+            return
+        if action == "tray" and not QSystemTrayIcon.isSystemTrayAvailable():
+            QMessageBox.information(self, APP_NAME, "系统托盘暂不可用，LifeOS 窗口将保持打开。")
+            return
+        if remember:
+            self._save_close_action(action)
+
+        if action == "tray":
+            self._tray.show()
+            self.hide()
+        else:
+            self._tray.hide()
+            event.accept()
+
+    def _save_close_action(self, action: CloseAction | None) -> None:
+        assert self._close_preferences is not None
+        try:
+            self._close_preferences.set(action)
+        except ClosePreferencesError:
+            QMessageBox.warning(self, APP_NAME, "暂时无法保存关闭设置。")
+
+    def _build_tray(self) -> QSystemTrayIcon:
+        icon = QApplication.windowIcon()
+        if icon.isNull():
+            icon = self.style().standardIcon(QStyle.StandardPixmap.SP_MessageBoxInformation)
+        tray = QSystemTrayIcon(icon, self)
+        tray.setToolTip(APP_NAME)
+        tray.activated.connect(self._tray_activated)
+        tray.messageClicked.connect(self._restore_window)
+        menu = QMenu(self)
+        menu.addAction("打开 LifeOS", self._restore_window)
+        quit_action = menu.addAction("退出 LifeOS", self._quit_from_tray)
+        quit_action.setObjectName("trayQuitAction")
+        tray.setContextMenu(menu)
+        return tray
+
+    def _tray_activated(self, reason: QSystemTrayIcon.ActivationReason) -> None:
+        if reason in (
+            QSystemTrayIcon.ActivationReason.Trigger,
+            QSystemTrayIcon.ActivationReason.DoubleClick,
+        ):
+            self._restore_window()
+
+    def _restore_window(self) -> None:
+        if self.isMinimized():
+            self.showNormal()
+        else:
+            self.show()
+        self.raise_()
+        self.activateWindow()
+
+    def _quit_from_tray(self) -> None:
+        self._quit_requested = True
+        self._tray.hide()
+        QApplication.quit()
 
     def _open_message_import(
         self,

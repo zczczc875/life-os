@@ -10,6 +10,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from sqlalchemy import delete, select
+from sqlalchemy.dialects.sqlite import insert
 
 from lifeos.infrastructure.database.models import AppSetting, utcnow
 
@@ -49,6 +50,19 @@ class SettingsRepository:
             # Touch the timestamp so repeated writes remain observable.
             row.updated_at = utcnow()
         return row
+
+    def upsert(self, key: str, value: str) -> AppSetting:
+        """Write a setting atomically, including when another session creates it."""
+        if not key:
+            raise ValueError("setting key must be a non-empty string")
+
+        now = utcnow()
+        insert_setting = insert(AppSetting).values(key=key, value=value, updated_at=now)
+        statement = insert_setting.on_conflict_do_update(
+            index_elements=[AppSetting.key],
+            set_={"value": value, "updated_at": now},
+        ).returning(AppSetting)
+        return self._session.scalars(statement, execution_options={"populate_existing": True}).one()
 
     def delete(self, key: str) -> bool:
         """Remove ``key`` and report whether a row was deleted."""
