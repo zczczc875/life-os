@@ -18,6 +18,7 @@ def parser():
         ("核对报名截止日期", ExtractedTask("核对报名截止日期")),
         ("请家长签字", ExtractedTask("家长签字")),
         ("整理这周五的会议纪要", ExtractedTask("整理这周五的会议纪要")),
+        ("整理明天后的会议纪要", ExtractedTask("整理明天后的会议纪要")),
         ("支付1,200元", ExtractedTask("支付1,200元")),
         ("交报告 DDL: 2026-12-18", ExtractedTask("交报告", date(2026, 12, 18))),
         (
@@ -31,6 +32,10 @@ def parser():
         (
             "各位同学请在明天下午五点半前提交报告",
             ExtractedTask("提交报告", date(2026, 11, 12), time(17, 30)),
+        ),
+        (
+            "明天下午5点20分前提交报告",
+            ExtractedTask("提交报告", date(2026, 11, 12), time(17, 20)),
         ),
         ("交报告，明晚8点", ExtractedTask("交报告", date(2026, 11, 12), time(20))),
         (
@@ -60,6 +65,12 @@ def test_quick_entry_cleans_the_title_and_extracts_only_an_identifiable_deadline
         ("明天上午17点交表", "截止时间无效"),
         ("下午5点前交表", "补充截止日期"),
         ("提交截止", "无法识别截止时间"),
+        ("提交报告 明天下午5点后", "无法识别截止时间"),
+        ("提交报告 明天下午5点左右", "无法识别截止时间"),
+        ("提交报告 2026-12-18 17:30:45", "截止时间无效"),
+        ("提交报告 2026-12-18 17:30 UTC", "截止时间无效"),
+        ("提交报告 2026-12-18 17:30+08:00", "截止时间无效"),
+        ("明天下午5点20提交报告", "截止时间无效"),
         ("交报告 DDL: 周五或下周一", "多个可能的截止时间"),
         ("请于12月20日至22日之间提交报告", "多个可能的截止时间"),
         ("请交实验报告，并填写问卷", "从通知导入"),
@@ -144,6 +155,18 @@ def test_notice_does_not_guess_ambiguous_deadline(parser):
         ExtractedTask("提交实验报告（截止:明天或后天）"),
         ExtractedTask("周五或下周一提交登记表"),
     ]
+
+
+@pytest.mark.parametrize(
+    "entry",
+    [
+        "提交报告 明天下午5点后",
+        "2026-12-18 17:30:45前提交报告",
+        "明天下午5点20提交报告",
+    ],
+)
+def test_notice_keeps_original_text_when_deadline_needs_review(parser, entry):
+    assert parser.extract_tasks(entry).tasks == [ExtractedTask(entry)]
 
 
 def test_relative_date_crosses_year_boundary():

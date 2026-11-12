@@ -1,14 +1,14 @@
 """Exercise the daily plan from its normal desktop entry point."""
 
-from datetime import datetime, time, timedelta
+from datetime import UTC, datetime, time, timedelta
 from types import SimpleNamespace
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import QDialog, QPushButton
 
 from lifeos.config.settings import Settings
 from lifeos.infrastructure.database.engine import create_database
-from lifeos.tasks import TaskService
+from lifeos.tasks import Task, TaskService
 from lifeos.ui import daily_plan
 from lifeos.ui.main_window import MainWindow
 
@@ -83,6 +83,38 @@ def test_daily_plan_reads_fresh_tasks_and_highlights_three(qtbot, tmp_path, monk
         ]
     finally:
         database.dispose()
+
+
+def test_open_daily_plan_reclassifies_a_deadline_without_reading_storage(qtbot, monkeypatch):
+    now = datetime(2026, 11, 12, 15)
+    monkeypatch.setattr(daily_plan, "datetime", SimpleNamespace(now=lambda: now))
+    task = Task(
+        id="deadline",
+        title="实验报告",
+        status="pending",
+        created_at=now.replace(tzinfo=UTC),
+        completed_at=None,
+        due_on=now.date(),
+        due_time=now.time(),
+    )
+    reads = []
+
+    def list_tasks():
+        reads.append(task.id)
+        return [task]
+
+    dialog = daily_plan.DailyPlanDialog(SimpleNamespace(list_tasks=list_tasks))
+    qtbot.addWidget(dialog)
+    dialog.show()
+    assert _plan_rows(dialog)[0][0] == "今天到期"
+
+    timer = dialog.findChild(QTimer)
+    assert timer is not None and timer.isActive()
+    now += timedelta(minutes=1)
+    timer.timeout.emit()
+
+    assert _plan_rows(dialog)[0][0] == "已逾期"
+    assert reads == [task.id]
 
 
 def test_daily_plan_can_retry_after_loading_fails(qtbot):

@@ -20,4 +20,4 @@ Phase 3 起由项目所有者单人维护。使用独立功能分支开发，保
 
 ## 当前范围
 
-Phase 3 的通知草稿与截止日期见 [PHASE3_MESSAGE_DRAFTS.md](docs/PHASE3_MESSAGE_DRAFTS.md)。Phase 2 的任务基线见 [PHASE2_TASKS.md](docs/PHASE2_TASKS.md)。
+已交付范围、验收状态和下一阶段优先级见 [ROADMAP.md](docs/ROADMAP.md)。Phase 3 的通知草稿与截止日期见 [PHASE3_MESSAGE_DRAFTS.md](docs/PHASE3_MESSAGE_DRAFTS.md)。Phase 2 的任务基线见 [PHASE2_TASKS.md](docs/PHASE2_TASKS.md)。

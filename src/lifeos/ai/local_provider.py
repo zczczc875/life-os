@@ -48,7 +48,12 @@ _FOLLOWING_TAG = re.compile(r"^\s*(?:截止|到期)\s*(?:[:：]\s*|(?=$))")
 _RANGE = r"(?:或(?:者)?|还是|与|到|至|[-~～–])"
 _RANGE_BETWEEN = re.compile(rf"^\s*(?:[,，]\s*)?{_RANGE}\s*$")
 _SHORT_RANGE = re.compile(rf"^\s*{_RANGE}\s*{_NUMBER}\s*[日号]")
-_UNSUPPORTED_CLOCK_SUFFIX = re.compile(r"^(?::[0-9]|[秒刻]|[+\-][0-9]|Z\b|UTC\b|GMT\b)")
+_UNSUPPORTED_CLOCK_SUFFIX = re.compile(
+    r"^(?::[0-9]+(?:\.[0-9]+)?|[秒刻]|[+\-][0-9]{1,4}(?::[0-9]{1,2})?(?![0-9:/.-])"
+    r"|[ \t]*(?:Z|UTC|GMT)\b)",
+    re.IGNORECASE,
+)
+_BARE_MINUTE = re.compile(rf"^{_NUMBER}(?:[秒刻])?")
 _UNCLEAR_DAY = re.compile(r"(?:本月底|月底|月末|年底|下月初|下个月|这几天|近日|下周)\s*(?:之前|前)")
 _DEADLINE_WITHOUT_DATE = re.compile(
     r"^(?:(?:提交|报名|交表|缴费)\s*)?(?:截止|最晚|最迟|截至)(?:日期|时间)?$"
@@ -214,6 +219,23 @@ def _has_explicit_time(text: str) -> bool:
     )
 
 
+def _unsupported_clock_suffix(matched_text: str, after: str) -> re.Match[str] | None:
+    unsupported = _UNSUPPORTED_CLOCK_SUFFIX.match(after)
+    if unsupported is not None or not matched_text.endswith(("点", "时")):
+        return unsupported
+    bare_minute = _BARE_MINUTE.match(after)
+    if bare_minute is not None:
+        rest = after[bare_minute.end() :]
+        if (
+            not rest.strip(_TRIM)
+            or _BEFORE_START.match(rest)
+            or _AFTER_START.match(rest)
+            or _is_action(_clean_title(rest))
+        ):
+            return bare_minute
+    return None
+
+
 def _phrase(text: str, today: date, *, quick: bool = False) -> _Phrase:
     text = _BRACKETED_HEADING.sub("", _NOTICE_PREFIX.sub("", _BULLET.sub("", text.strip())))
     original_title = _clean_title(text)
@@ -227,6 +249,9 @@ def _phrase(text: str, today: date, *, quick: bool = False) -> _Phrase:
     issue = ""
     for match in _DEADLINE.finditer(text):
         before, after = text[: match.start()], text[match.end() :]
+        unsupported_clock = _unsupported_clock_suffix(match[0], after)
+        clock_end = unsupported_clock.end() if unsupported_clock else 0
+        after = after[clock_end:]
         tag = _TAG_END.search(before)
         if (
             tag
@@ -238,9 +263,12 @@ def _phrase(text: str, today: date, *, quick: bool = False) -> _Phrase:
             tag = None
         at = _AT_END.search(before)
         before_limit = _BEFORE_START.match(after)
+        after_limit = _AFTER_START.match(after)
         following_tag = _FOLLOWING_TAG.match(after)
+        suffix = before_limit or following_tag or after_limit
+        suffix_end = suffix.end() if suffix else 0
         leading = not _clean_title(before)
-        trailing = not after.strip(_TRIM)
+        trailing = not after[suffix_end:].strip(_TRIM)
         alternative = bool(spans and _RANGE_BETWEEN.fullmatch(text[spans[-1][1] : match.start()]))
         prefix_has_range = bool(
             not tag and _DEADLINE.search(before) and re.search(rf"{_RANGE}\s*$", before)
@@ -257,22 +285,21 @@ def _phrase(text: str, today: date, *, quick: bool = False) -> _Phrase:
         ):
             continue
 
-        if _UNSUPPORTED_CLOCK_SUFFIX.match(after):
+        if unsupported_clock:
             issue = _INVALID
         elif alternative or prefix_has_range or _SHORT_RANGE.match(after):
             issue = _AMBIGUOUS
-        elif _AFTER_START.match(after):
+        elif after_limit:
             issue = _UNCLEAR
         try:
             deadlines.add((_day_from(match, today), _time_from(match)))
         except (ValueError, OverflowError):
             issue = _INVALID
         prefix = tag or at
-        suffix = before_limit or following_tag
         spans.append(
             (
                 prefix.start() if prefix else match.start(),
-                match.end() + (suffix.end() if suffix else 0),
+                match.end() + clock_end + suffix_end,
             )
         )
 
