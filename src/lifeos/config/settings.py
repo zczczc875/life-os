@@ -12,7 +12,7 @@ from pathlib import Path
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-_APP_VERSION = "0.1.0"
+_APP_VERSION = "0.2.0"
 
 
 def _default_data_dir() -> Path:

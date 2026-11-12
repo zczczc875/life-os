@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, Protocol
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
+    QCheckBox,
     QDialog,
     QDialogButtonBox,
     QFormLayout,
@@ -27,6 +28,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from lifeos.tasks.daily_plan import build_daily_plan
 from lifeos.ui.task_dates import DUE_DATE_PLACEHOLDER, format_deadline, parse_optional_deadline
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
@@ -219,6 +221,9 @@ class TaskPanel(QWidget):
         self.empty_label.setWordWrap(True)
         self.empty_label.setStyleSheet("color: #6b7280;")
 
+        self.priority_sort_checkbox = QCheckBox("按优先级排序", self)
+        self.priority_sort_checkbox.setObjectName("taskPrioritySort")
+
         self.task_list = QListWidget(self)
         self.task_list.setObjectName("taskList")
         self.task_list.setAlternatingRowColors(True)
@@ -237,12 +242,14 @@ class TaskPanel(QWidget):
         layout.addLayout(input_row)
         layout.addWidget(self.error_label)
         layout.addWidget(self.empty_label)
+        layout.addWidget(self.priority_sort_checkbox)
         layout.addWidget(self.task_list, 1)
         layout.addWidget(self.edit_button, 0, Qt.AlignmentFlag.AlignRight)
 
         self.task_input.returnPressed.connect(self.submit_input)
         self.add_button.clicked.connect(self.submit_input)
         self.edit_button.clicked.connect(self._open_editor)
+        self.priority_sort_checkbox.toggled.connect(self.refresh)
         self.task_list.itemChanged.connect(self._on_item_changed)
         self.task_list.itemSelectionChanged.connect(self._update_edit_button)
 
@@ -259,6 +266,8 @@ class TaskPanel(QWidget):
         """Enable or disable the controls when no service is injected yet."""
         self.task_input.setEnabled(bool(available))
         self.add_button.setEnabled(bool(available))
+        self.priority_sort_checkbox.setVisible(bool(available))
+        self.priority_sort_checkbox.setEnabled(bool(available))
         self.edit_button.setVisible(bool(available) and self._can_edit)
         self._update_edit_button()
         if not available:
@@ -383,6 +392,11 @@ class TaskPanel(QWidget):
         now = _local_minute()
         self._rendered_at = now
         self._pending_deadlines.clear()
+        if self.priority_sort_checkbox.isChecked():
+            tasks_by_id = {task.id: task for task in tasks}
+            pending = [tasks_by_id[item.task_id] for item in build_daily_plan(tasks, now=now)]
+            others = [task for task in tasks if task.status != STATUS_PENDING]
+            tasks = pending + others
         selected = self.task_list.selectedItems()
         selected_id = selected[0].data(Qt.ItemDataRole.UserRole) if selected else None
         self._loading = True

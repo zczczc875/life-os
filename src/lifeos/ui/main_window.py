@@ -13,6 +13,7 @@ from PySide6.QtCore import Qt
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import QHBoxLayout, QLabel, QMainWindow, QPushButton, QVBoxLayout, QWidget
 
+from lifeos.ui.daily_plan import DailyPlanDialog
 from lifeos.ui.message_import import MessageImportDialog
 from lifeos.ui.task_panel import TaskPanel, TaskService
 
@@ -73,6 +74,11 @@ class MainWindow(QMainWindow):
                 lambda: self._open_message_import(draft_preview, task_service)
             )
             tasks_header.addWidget(self.message_import_button)
+        if task_service is not None:
+            self.daily_plan_button = QPushButton("今日计划", self)
+            self.daily_plan_button.setObjectName("dailyPlanButton")
+            self.daily_plan_button.clicked.connect(lambda: self._open_daily_plan(task_service))
+            tasks_header.addWidget(self.daily_plan_button)
 
         layout = QVBoxLayout()
         layout.setContentsMargins(32, 28, 32, 28)
@@ -101,6 +107,10 @@ class MainWindow(QMainWindow):
     ) -> None:
         dialog = MessageImportDialog(draft_preview, task_service, self)
         dialog.task_saved.connect(self.task_panel.refresh)
+        dialog.open()
+
+    def _open_daily_plan(self, task_service: TaskService) -> None:
+        dialog = DailyPlanDialog(task_service, self)
         dialog.open()
 
     @staticmethod

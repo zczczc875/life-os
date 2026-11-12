@@ -126,6 +126,59 @@ def panel(qtbot):
     return widget
 
 
+def test_priority_sort_is_opt_in_and_keeps_task_selection(qtbot, monkeypatch):
+    now = datetime(2026, 12, 9, 14, 30)
+    monkeypatch.setattr(task_panel, "_local_minute", lambda: now)
+    service = EditingTaskService(
+        tasks=[
+            TaskDouble("undated", "整理桌面"),
+            TaskDouble("first-done", "已归档", status=STATUS_COMPLETED),
+            TaskDouble("today", "交报告", due_on=now.date(), due_time=time(16)),
+            TaskDouble("later", "交报名表", due_on=date(2026, 12, 12)),
+            TaskDouble("overdue", "补交签到表", due_on=now.date(), due_time=time(10)),
+            TaskDouble("second-done", "已提交", status=STATUS_COMPLETED),
+        ]
+    )
+    widget = TaskPanel(service)
+    qtbot.addWidget(widget)
+    widget.show()
+
+    def row_ids():
+        return [
+            widget.task_list.item(row).data(Qt.ItemDataRole.UserRole)
+            for row in range(widget.task_list.count())
+        ]
+
+    assert widget.priority_sort_checkbox.isVisible()
+    assert not widget.priority_sort_checkbox.isChecked()
+    service_order = [task.id for task in service.tasks]
+    assert row_ids() == service_order
+    widget.task_list.setCurrentRow(2)
+
+    widget.priority_sort_checkbox.click()
+    assert row_ids() == ["overdue", "today", "later", "undated", "first-done", "second-done"]
+    assert widget.task_list.currentItem().data(Qt.ItemDataRole.UserRole) == "today"
+    assert widget.edit_button.isEnabled()
+    assert service.completed_ids == []
+
+    widget.task_list.item(0).setCheckState(Qt.CheckState.Checked)
+    assert service.completed_ids == ["overdue"]
+    assert row_ids() == ["today", "later", "undated", "first-done", "overdue", "second-done"]
+    assert widget.task_list.currentItem().data(Qt.ItemDataRole.UserRole) == "today"
+
+    widget.priority_sort_checkbox.click()
+    assert row_ids() == service_order
+
+
+def test_priority_sort_control_is_hidden_without_a_task_service(qtbot):
+    widget = TaskPanel()
+    qtbot.addWidget(widget)
+    widget.show()
+
+    assert widget.priority_sort_checkbox.isHidden()
+    assert not widget.priority_sort_checkbox.isEnabled()
+
+
 def test_deadline_hints_follow_the_local_day_and_task_status(qtbot, monkeypatch):
     now = datetime(2026, 12, 9, 23, 59)
     monkeypatch.setattr(task_panel, "_local_minute", lambda: now)
