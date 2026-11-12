@@ -1,4 +1,5 @@
 # Build with: python -m PyInstaller packaging/LifeOS.spec
+import os
 from pathlib import Path
 
 from PyInstaller.utils.hooks import collect_data_files, collect_submodules, copy_metadata
@@ -6,6 +7,7 @@ from PyInstaller.utils.hooks import collect_data_files, collect_submodules, copy
 packaging_dir = Path(SPECPATH)
 root = packaging_dir.parent
 icon = packaging_dir / "LifeOS.ico"
+preview = os.environ.get("LIFEOS_BUILD_PREVIEW") == "1"
 datas = [(str(root / "migrations"), "migrations"), (str(icon), ".")]
 datas += collect_data_files("alembic")
 for package in ("alembic", "SQLAlchemy", "pydantic", "pydantic-settings"):
@@ -23,7 +25,7 @@ a = Analysis(
     hiddenimports=hiddenimports,
     hookspath=[],
     hooksconfig={},
-    runtime_hooks=[],
+    runtime_hooks=[str(packaging_dir / "preview_profile.py")] if preview else [],
     excludes=[],
     noarchive=False,
 )
@@ -34,7 +36,7 @@ exe = EXE(
     a.binaries,
     a.datas,
     [],
-    name="LifeOS",
+    name="LifeOS-Preview" if preview else "LifeOS",
     icon=str(icon),
     debug=False,
     bootloader_ignore_signals=False,

@@ -120,6 +120,7 @@ class TaskRecord(Base):
         ),
         nullable=True,
     )
+    reminder_claimed_at: Mapped[_datetime.datetime | None] = mapped_column(DateTime, nullable=True)
 
     __table_args__ = (
         # Reject unknown states at the storage layer, so a service bug cannot

@@ -20,6 +20,7 @@ def _install(monkeypatch, name, **members):
 def test_startup_order_and_status(monkeypatch, connected):
     calls = []
     settings = SimpleNamespace(app_version="test-version")
+    expected_reminders = object()
 
     class Database:
         engine = object()
@@ -44,11 +45,14 @@ def test_startup_order_and_status(monkeypatch, connected):
             return 0
 
     class Window:
-        def __init__(self, version, status, *, task_service, draft_preview, quick_parse):
+        def __init__(
+            self, version, status, *, task_service, draft_preview, quick_parse, reminder_service
+        ):
             assert (version, status) == ("test-version", connected)
             assert (task_service is not None) is connected
             assert (draft_preview is not None) is connected
             assert (quick_parse is not None) is connected
+            assert reminder_service is (expected_reminders if connected else None)
             if draft_preview is not None:
                 [draft] = draft_preview("交表 DDL: 2026-12-18").tasks
                 assert draft.title == "交表"
@@ -82,7 +86,7 @@ def test_startup_order_and_status(monkeypatch, connected):
 
         def get_columns(self, name):
             assert name == "tasks"
-            return [{"name": "due_on"}, {"name": "due_time"}]
+            return [{"name": name} for name in ("due_on", "due_time", "reminder_claimed_at")]
 
     monkeypatch.setattr(sqlalchemy, "inspect", lambda engine: Inspector())
     _install(monkeypatch, "PySide6.QtWidgets", QApplication=Application, QMessageBox=object)
@@ -90,6 +94,7 @@ def test_startup_order_and_status(monkeypatch, connected):
     _install(monkeypatch, "lifeos.infrastructure.database.engine", create_database=create_database)
     _install(monkeypatch, "lifeos.infrastructure.logging.setup", setup_logging=setup_logging)
     _install(monkeypatch, "lifeos.tasks", TaskService=lambda database: object())
+    _install(monkeypatch, "lifeos.tasks.reminders", ReminderService=lambda _: expected_reminders)
     _install(monkeypatch, "lifeos.ui.main_window", MainWindow=Window)
 
     assert main() == 0
@@ -123,6 +128,7 @@ def test_disposes_database_on_connection_error(monkeypatch):
     )
     _install(monkeypatch, "lifeos.infrastructure.logging.setup", setup_logging=lambda _: None)
     _install(monkeypatch, "lifeos.tasks", TaskService=object)
+    _install(monkeypatch, "lifeos.tasks.reminders", ReminderService=object)
     _install(monkeypatch, "lifeos.ui.main_window", MainWindow=object)
 
     with pytest.raises(RuntimeError, match="unexpected error"):
@@ -130,7 +136,7 @@ def test_disposes_database_on_connection_error(monkeypatch):
     assert calls == ["dispose"]
 
 
-@pytest.mark.parametrize("revision", [None, "0002_tasks", "0003_task_due_on"])
+@pytest.mark.parametrize("revision", [None, "0002_tasks", "0003_task_due_on", "0004_task_due_time"])
 def test_unmigrated_database_prompts_and_disables_tasks(qapp, monkeypatch, tmp_path, revision):
     from alembic import command
     from PySide6.QtWidgets import QApplication, QMessageBox

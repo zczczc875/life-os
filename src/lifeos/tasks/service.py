@@ -65,6 +65,8 @@ def _storage_error(error: Exception) -> TaskStorageError:
             "no such table: tasks",
             "no such column: tasks.due_on",
             "no such column: tasks.due_time",
+            "no such column: tasks.reminder_claimed_at",
+            "no such column: reminder_claimed_at",
             "table tasks has no column named due_on",
             "table tasks has no column named due_time",
         ):

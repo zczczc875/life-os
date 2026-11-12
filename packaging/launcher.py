@@ -37,8 +37,14 @@ def _existing_revision(path: Path, latest_revision: str) -> str | None:
         if len(revisions) != 1:
             raise RuntimeError("数据库存在多个迁移版本，无法安全升级。请联系开发者。")
         revision = str(revisions[0][0])
-        if revision == latest_revision and not {"tasks", "app_settings"}.issubset(tables):
-            raise RuntimeError("数据库版本已是最新，但缺少数据表。请备份数据库并联系开发者。")
+        if revision == latest_revision:
+            task_columns = {row[1] for row in connection.execute("PRAGMA table_info(tasks)")}
+            if not {"tasks", "app_settings"}.issubset(tables) or not {
+                "due_on",
+                "due_time",
+                "reminder_claimed_at",
+            }.issubset(task_columns):
+                raise RuntimeError("数据库版本已是最新，但表结构不完整。请备份数据库并联系开发者。")
         return revision
     finally:
         connection.close()

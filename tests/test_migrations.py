@@ -12,7 +12,7 @@ ever committed to ``migrations/versions/``.
 from __future__ import annotations
 
 import textwrap
-from datetime import date, time
+from datetime import date, datetime, time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -24,6 +24,7 @@ from lifeos.infrastructure.database.engine import create_database
 from lifeos.infrastructure.database.models import Base
 from lifeos.infrastructure.database.repository import SettingsRepository
 from lifeos.tasks import TaskService, TaskStorageError
+from lifeos.tasks.reminders import ReminderService
 from tests._helpers import alembic_config, head_revision
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -191,6 +192,7 @@ def test_only_reviewed_revisions_are_committed():
         "0002_tasks.py",
         "0003_task_due_on.py",
         "0004_task_due_time.py",
+        "0005_task_reminders.py",
     ]
 
 
@@ -217,7 +219,7 @@ def test_deadline_time_migration_preserves_dated_and_undated_tasks(tmp_path: Pat
         with pytest.raises(TaskStorageError, match="迁移"):
             service.list_tasks()
 
-        assert database.ensure_schema() == "0004_task_due_time"
+        assert database.ensure_schema() == HEAD_REVISION
         undated, dated = service.list_tasks()
         assert (undated.id, undated.title, undated.status) == ("undated", "整理桌面", "pending")
         assert undated.due_on is undated.due_time is None
@@ -246,6 +248,42 @@ def test_deadline_time_migration_preserves_dated_and_undated_tasks(tmp_path: Pat
         }
     finally:
         downgraded.dispose()
+
+
+def test_reminder_migration_preserves_existing_deadlines_and_defaults_off(tmp_path: Path):
+    from alembic import command
+
+    database_file = tmp_path / "lifeos.sqlite3"
+    config = alembic_config(database_file)
+    command.upgrade(config, "0004_task_due_time")
+    database = create_database(_settings(tmp_path))
+    try:
+        with database.engine.begin() as connection:
+            connection.execute(
+                text(
+                    "INSERT INTO tasks (id, title, status, created_at, due_on, due_time)"
+                    " VALUES ('old', '已有任务', 'pending', '2026-11-11 08:00:00',"
+                    " '2026-11-12', '09:00:00.000000')"
+                )
+            )
+        assert database.ensure_schema() == "0005_task_reminders"
+
+        reminders = ReminderService(database)
+        (task,) = TaskService(database).list_tasks()
+        assert (task.id, task.title, task.due_on, task.due_time) == (
+            "old",
+            "已有任务",
+            date(2026, 11, 12),
+            time(9),
+        )
+        now = datetime(2026, 11, 12, 9)
+        assert reminders.enabled() is False
+        assert reminders.claim_due(now) == []
+        reminders.set_enabled(True)
+        assert reminders.claim_due(now) == [task]
+        assert reminders.claim_due(now) == []
+    finally:
+        database.dispose()
 
 
 def test_probe_revisions_never_touch_the_source_tree(tmp_path: Path, add_follow_up_revision):

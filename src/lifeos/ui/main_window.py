@@ -15,12 +15,14 @@ from PySide6.QtWidgets import QHBoxLayout, QLabel, QMainWindow, QPushButton, QVB
 
 from lifeos.ui.daily_plan import DailyPlanDialog
 from lifeos.ui.message_import import MessageImportDialog
+from lifeos.ui.reminders import ReminderPanel
 from lifeos.ui.task_panel import TaskPanel, TaskService
 
 if TYPE_CHECKING:
     from collections.abc import Callable
 
     from lifeos.ai.provider import ExtractedTask, TaskExtractionResponse
+    from lifeos.tasks.reminders import ReminderService
 
 APP_NAME = "LifeOS"
 WELCOME_TEXT = "欢迎使用 LifeOS，从今天开始整理你的生活。"
@@ -40,6 +42,7 @@ class MainWindow(QMainWindow):
         *,
         draft_preview: Callable[[str], TaskExtractionResponse] | None = None,
         quick_parse: Callable[[str], ExtractedTask] | None = None,
+        reminder_service: ReminderService | None = None,
     ) -> None:
         super().__init__()
         self._app_version = app_version
@@ -91,6 +94,8 @@ class MainWindow(QMainWindow):
             layout.addWidget(label)
         layout.addLayout(tasks_header)
         layout.addWidget(self.task_panel, 1)
+        if reminder_service is not None:
+            layout.addWidget(ReminderPanel(reminder_service, self))
         layout.addWidget(self.status_label)
 
         central_widget = QWidget(self)

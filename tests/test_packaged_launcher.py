@@ -2,6 +2,7 @@
 
 import importlib.util
 import sqlite3
+from contextlib import closing
 from pathlib import Path
 
 import pytest
@@ -133,3 +134,48 @@ def test_unknown_existing_version_refuses_upgrade(isolated_data, monkeypatch):
     assert not prompts and not launches and len(errors) == 1
     assert _version(database) == "unknown_revision"
     assert not list(data.glob("*.bak"))
+
+
+def test_latest_schema_without_reminder_column_refuses_launch(isolated_data, monkeypatch):
+    data, launches, errors = isolated_data
+    config = Config(str(_PROJECT / "alembic.ini"))
+    command.upgrade(config, "0004_task_due_time")
+    command.stamp(config, head_revision())
+    database = data / "lifeos.sqlite3"
+    prompts = _answer(monkeypatch, QMessageBox.StandardButton.Yes)
+
+    assert launcher.main() == 1
+    assert not prompts and not launches and len(errors) == 1
+    assert _version(database) == head_revision()
+    assert not list(data.glob("*.bak"))
+
+
+def test_v020_upgrade_preserves_task_and_legacy_backup(isolated_data, monkeypatch):
+    data, launches, errors = isolated_data
+    config = Config(str(_PROJECT / "alembic.ini"))
+    command.upgrade(config, "0004_task_due_time")
+    database = data / "lifeos.sqlite3"
+    task = ("saved-task", "交实验报告", "pending", "2026-11-12", "17:30:00.000000")
+    with closing(sqlite3.connect(database)) as connection:
+        connection.execute(
+            "INSERT INTO tasks(id, title, status, created_at, due_on, due_time) "
+            "VALUES (?, ?, ?, '2026-11-11', ?, ?)",
+            task,
+        )
+        connection.commit()
+    prompts = _answer(monkeypatch, QMessageBox.StandardButton.Yes)
+
+    assert launcher.main() == 0
+    assert len(prompts) == 1 and _version(database) == head_revision()
+    [backup] = data.glob("lifeos.sqlite3.before-upgrade-*.bak")
+    assert _version(backup) == "0004_task_due_time"
+    for path in (database, backup):
+        with closing(sqlite3.connect(path)) as connection:
+            assert connection.execute("PRAGMA integrity_check").fetchone() == ("ok",)
+            saved_task = connection.execute(
+                "SELECT id, title, status, due_on, due_time FROM tasks"
+            ).fetchone()
+            assert saved_task == task
+            columns = {column[1] for column in connection.execute("PRAGMA table_info(tasks)")}
+            assert ("reminder_claimed_at" in columns) == (path == database)
+    assert launches == [True] and errors == []

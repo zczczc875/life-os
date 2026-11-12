@@ -14,6 +14,7 @@ def main() -> int:
     from lifeos.infrastructure.database.engine import create_database
     from lifeos.infrastructure.logging.setup import setup_logging
     from lifeos.tasks import TaskService
+    from lifeos.tasks.reminders import ReminderService
     from lifeos.ui.main_window import MainWindow
 
     settings = get_settings()
@@ -26,9 +27,11 @@ def main() -> int:
         if database_status:
             try:
                 inspector = inspect(database.engine)
-                has_task_schema = inspector.has_table("tasks") and {"due_on", "due_time"} <= {
-                    column["name"] for column in inspector.get_columns("tasks")
-                }
+                has_task_schema = inspector.has_table("tasks") and {
+                    "due_on",
+                    "due_time",
+                    "reminder_claimed_at",
+                } <= {column["name"] for column in inspector.get_columns("tasks")}
             except SQLAlchemyError:
                 database_status = False
                 has_task_schema = False
@@ -49,6 +52,7 @@ def main() -> int:
             task_service=task_service,
             draft_preview=provider.extract_tasks if provider is not None else None,
             quick_parse=provider.parse_quick_task if provider is not None else None,
+            reminder_service=ReminderService(database) if task_service is not None else None,
         )
         window.show()
         return application.exec()

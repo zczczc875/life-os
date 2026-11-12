@@ -17,7 +17,7 @@ import datetime as _datetime
 import uuid
 from typing import TYPE_CHECKING
 
-from sqlalchemy import func, select, update
+from sqlalchemy import case, func, select, update
 
 from lifeos.infrastructure.database.models import (
     TASK_STATUS_COMPLETED,
@@ -112,7 +112,16 @@ class TaskRepository:
         statement = (
             update(TaskRecord)
             .where(TaskRecord.id == task_id)
-            .values(title=normalize_title(title), due_on=due_on, due_time=due_time)
+            .values(
+                title=normalize_title(title),
+                due_on=due_on,
+                due_time=due_time,
+                reminder_claimed_at=case(
+                    (TaskRecord.due_on.is_distinct_from(due_on), None),
+                    (TaskRecord.due_time.is_distinct_from(due_time), None),
+                    else_=TaskRecord.reminder_claimed_at,
+                ),
+            )
         )
         self._session.execute(statement, execution_options={"synchronize_session": False})
         return self._session.get(TaskRecord, task_id, populate_existing=True)
