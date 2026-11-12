@@ -7,6 +7,7 @@ import sys
 import uuid
 from pathlib import Path
 
+from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import QApplication, QMessageBox
 
 
@@ -78,6 +79,7 @@ def _known_revisions() -> tuple[str, set[str]]:
 def main() -> int:
     app = QApplication.instance() or QApplication(sys.argv)
     app.setApplicationName("LifeOS")
+    app.setWindowIcon(QIcon(str(Path(__file__).with_name("LifeOS.ico"))))
     try:
         from lifeos.config.settings import get_settings
         from lifeos.infrastructure.database.url import resolve_target

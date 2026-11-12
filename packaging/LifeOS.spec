@@ -3,8 +3,10 @@ from pathlib import Path
 
 from PyInstaller.utils.hooks import collect_data_files, collect_submodules, copy_metadata
 
-root = Path(SPECPATH).parent
-datas = [(str(root / "migrations"), "migrations")]
+packaging_dir = Path(SPECPATH)
+root = packaging_dir.parent
+icon = packaging_dir / "LifeOS.ico"
+datas = [(str(root / "migrations"), "migrations"), (str(icon), ".")]
 datas += collect_data_files("alembic")
 for package in ("alembic", "SQLAlchemy", "pydantic", "pydantic-settings"):
     datas += copy_metadata(package)
@@ -14,7 +16,7 @@ hiddenimports += collect_submodules("alembic")
 hiddenimports += collect_submodules("sqlalchemy.dialects.sqlite")
 
 a = Analysis(
-    [str(root / "packaging" / "launcher.py")],
+    [str(packaging_dir / "launcher.py")],
     pathex=[str(root / "src")],
     binaries=[],
     datas=datas,
@@ -33,6 +35,7 @@ exe = EXE(
     a.datas,
     [],
     name="LifeOS",
+    icon=str(icon),
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
