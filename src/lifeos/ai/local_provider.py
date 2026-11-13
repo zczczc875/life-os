@@ -24,7 +24,8 @@ _DATE = (
     rf"|(?:(?P<year>[0-9]{{4}})\s*年\s*)?(?P<month>{_NUMBER})\s*月\s*"
     rf"(?P<day>{_NUMBER})(?:\s*[日号]|(?![0-9]))"
     r"|(?P<relative>今天|今日|今早|今晚|明天|明日|明早|明晚|大后天|后天)"
-    r"|(?P<week>下|本|这)?(?:周|星期|礼拜)(?P<weekday>[一二三四五六日天])"
+    r"|(?<!下)(?<!下个)(?:(?P<week>下下|下|本|这)个?)?"
+    r"(?:周|星期|礼拜)(?P<weekday>[一二三四五六日天])"
     r")"
 )
 _DEADLINE = re.compile(rf"{_DATE}(?:[ \t]*(?:T(?=[0-9]))?{_CLOCK})?")
@@ -174,10 +175,11 @@ def _day_from(match: re.Match[str], today: date) -> date:
     if match["relative"]:
         return today + timedelta(days=_RELATIVE_DAYS[match["relative"]])
     weekday = "一二三四五六日".index(match["weekday"].replace("天", "日"))
-    if match["week"] is None:
+    week = match["week"]
+    if week is None:
         return today + timedelta(days=(weekday - today.weekday()) % 7)
     week_start = today - timedelta(days=today.weekday())
-    return week_start + timedelta(days=weekday + (7 if match["week"] == "下" else 0))
+    return week_start + timedelta(days=weekday, weeks=week.count("下"))
 
 
 def _time_from(match: re.Match[str]) -> time | None:

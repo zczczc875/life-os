@@ -191,6 +191,16 @@ def test_notice_without_action_has_no_drafts(parser):
         ("明天下午8点我们有课程汇报", ExtractedTask("课程汇报", date(2026, 11, 14), time(20))),
         ("明天８：３０有组会", ExtractedTask("组会", date(2026, 11, 14), time(8, 30))),
         ("2021年11月14日8：00我有pre", ExtractedTask("pre", date(2021, 11, 14), time(8))),
+        ("下下周五九点 毛概pre", ExtractedTask("毛概pre", date(2026, 11, 27), time(9))),
+        (
+            "下下个星期五上午九点半，我有毛概pre",
+            ExtractedTask("毛概pre", date(2026, 11, 27), time(9, 30)),
+        ),
+        (
+            "下下周五九点前提交报告",
+            ExtractedTask("提交报告", date(2026, 11, 27), time(9)),
+        ),
+        ("下周五九点 毛概pre", ExtractedTask("毛概pre", date(2026, 11, 20), time(9))),
     ],
 )
 def test_both_parsers_normalize_scheduled_events(entry, expected):
@@ -209,6 +219,9 @@ def test_notice_does_not_apply_the_event_time_to_the_next_task(parser):
         ExtractedTask("提交报告")
     ]
     assert parser.parse_quick_task("整理明天组会") == ExtractedTask("整理明天组会")
+    assert parser.parse_quick_task("整理下下周五的会议纪要") == ExtractedTask(
+        "整理下下周五的会议纪要"
+    )
 
 
 def test_two_scheduled_events_require_the_notification_import(parser):
