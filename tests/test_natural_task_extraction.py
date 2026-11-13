@@ -178,3 +178,58 @@ def test_relative_date_crosses_year_boundary():
 
 def test_notice_without_action_has_no_drafts(parser):
     assert parser.extract_tasks("温馨提示：说明会周五举行。下周一 18:00。\n谢谢。").tasks == []
+
+
+@pytest.mark.parametrize(
+    ("entry", "expected"),
+    [
+        ("明天8点 我有pre", ExtractedTask("pre", date(2026, 11, 14), time(8))),
+        ("明天8点，我有pre", ExtractedTask("pre", date(2026, 11, 14), time(8))),
+        ("我有pre，明天8点", ExtractedTask("pre", date(2026, 11, 14), time(8))),
+        ("明天8点\n我有pre", ExtractedTask("pre", date(2026, 11, 14), time(8))),
+        ("我明天8点有pre", ExtractedTask("pre", date(2026, 11, 14), time(8))),
+        ("明天下午8点我们有课程汇报", ExtractedTask("课程汇报", date(2026, 11, 14), time(20))),
+        ("明天８：３０有组会", ExtractedTask("组会", date(2026, 11, 14), time(8, 30))),
+        ("2021年11月14日8：00我有pre", ExtractedTask("pre", date(2021, 11, 14), time(8))),
+    ],
+)
+def test_both_parsers_normalize_scheduled_events(entry, expected):
+    provider = LocalDraftProvider(today=date(2026, 11, 13))
+    assert provider.parse_quick_task(entry) == expected
+    assert provider.extract_tasks(entry).tasks == [expected]
+
+
+def test_notice_does_not_apply_the_event_time_to_the_next_task(parser):
+    assert parser.extract_tasks("明天8点，我有pre。请提交报告。").tasks == [
+        ExtractedTask("pre", date(2026, 11, 12), time(8)),
+        ExtractedTask("提交报告"),
+    ]
+    assert parser.extract_tasks("明天8点我没有pre。明天9点有通知。").tasks == []
+    assert parser.extract_tasks("明天8点，我没有pre。请提交报告。").tasks == [
+        ExtractedTask("提交报告")
+    ]
+    assert parser.parse_quick_task("整理明天组会") == ExtractedTask("整理明天组会")
+
+
+def test_two_scheduled_events_require_the_notification_import(parser):
+    entry = "明天8点我有pre，后天10点我有答辩"
+    with pytest.raises(ValueError, match="从通知导入"):
+        parser.parse_quick_task(entry)
+    assert parser.extract_tasks(entry).tasks == [
+        ExtractedTask("pre", date(2026, 11, 12), time(8)),
+        ExtractedTask("答辩", date(2026, 11, 13), time(10)),
+    ]
+
+
+@pytest.mark.parametrize("entry", ["明天8点或9点我有pre", "我明天8点到9点有pre"])
+def test_alternative_event_times_require_confirmation(parser, entry):
+    with pytest.raises(ValueError, match="多个可能的截止时间"):
+        parser.parse_quick_task(entry)
+    assert parser.extract_tasks(entry).tasks == [ExtractedTask(entry)]
+
+
+@pytest.mark.parametrize("entry", ["明天8点30我有pre", "我明天8点30有pre"])
+def test_incomplete_event_time_is_not_silently_shortened(parser, entry):
+    with pytest.raises(ValueError, match="截止时间无效"):
+        parser.parse_quick_task(entry)
+    assert parser.extract_tasks(entry).tasks == [ExtractedTask(entry)]

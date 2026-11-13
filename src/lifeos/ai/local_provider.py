@@ -47,6 +47,7 @@ _AFTER_START = re.compile(r"^\s*(?:之后|以后|左右|后)(?![的些])")
 _FOLLOWING_TAG = re.compile(r"^\s*(?:截止|到期)\s*(?:[:：]\s*|(?=$))")
 _RANGE = r"(?:或(?:者)?|还是|与|到|至|[-~～–])"
 _RANGE_BETWEEN = re.compile(rf"^\s*(?:[,，]\s*)?{_RANGE}\s*$")
+_CLOCK_RANGE_SEPARATOR = re.compile(rf"^\s*(?:[,，]\s*)?{_RANGE}\s*")
 _SHORT_RANGE = re.compile(rf"^\s*{_RANGE}\s*{_NUMBER}\s*[日号]")
 _UNSUPPORTED_CLOCK_SUFFIX = re.compile(
     r"^(?::[0-9]+(?:\.[0-9]+)?|[秒刻]|[+\-][0-9]{1,4}(?::[0-9]{1,2})?(?![0-9:/.-])"
@@ -90,6 +91,14 @@ _ACTION = re.compile(
     r"(?:submit|upload|send|complete|finish|pay|buy|bring|call|register|review|print)\b)",
     re.IGNORECASE,
 )
+_EVENT_SUBJECT = r"(?:我(?:们)?|大家|你(?:们)?)"
+_EVENT_PREFIX = re.compile(rf"^(?:{_EVENT_SUBJECT}\s*)?有\s*")
+_EVENT_NAME = re.compile(
+    r"(?:[\u4e00-\u9fff]{0,24}\s*)?"
+    r"(?:pre|presentation|汇报|答辩|考试|测验|面试|组会|班会|会议|讲座|上课)",
+    re.IGNORECASE,
+)
+_EVENT_CANCELLED = re.compile(r"取消|延期|推迟|改期|停课|不参加|不开|没有|不用|无需")
 _METADATA = re.compile(
     r"^(?:通知(?:如下|正文|[:：])|公告|温馨提示|提醒事项|联系方式|"
     r"(?:报名|提交|下载|缴费|通知|注册|参加|上传|发放|反馈|付款|签到|领取)"
@@ -138,9 +147,10 @@ class _Phrase:
     original: str = ""
 
     def draft(self) -> ExtractedTask:
-        return ExtractedTask(
-            self.original if self.issue else self.title, self.due_on, self.due_time
-        )
+        title = self.title
+        if self.due_on is not None:
+            title = _event_title(title) or title
+        return ExtractedTask(self.original if self.issue else title, self.due_on, self.due_time)
 
 
 def _number(value: str) -> int:
@@ -209,6 +219,25 @@ def _is_action(title: str) -> bool:
     )
 
 
+def _event_title(title: str) -> str | None:
+    if _NEGATIVE.match(title) or _EVENT_CANCELLED.search(title):
+        return None
+    name = _EVENT_PREFIX.sub("", title)
+    return name if _EVENT_NAME.fullmatch(name) else None
+
+
+def _is_notice_task(phrase: _Phrase, *, has_context_deadline: bool = False) -> bool:
+    if _is_action(phrase.title):
+        return True
+    name = _event_title(phrase.title)
+    return name is not None and (
+        has_context_deadline
+        or phrase.due_on is not None
+        or bool(phrase.issue)
+        or name != phrase.title
+    )
+
+
 def _has_explicit_time(text: str) -> bool:
     return any(
         not text[: clock.start()].strip(_TRIM)
@@ -226,11 +255,13 @@ def _unsupported_clock_suffix(matched_text: str, after: str) -> re.Match[str] | 
     bare_minute = _BARE_MINUTE.match(after)
     if bare_minute is not None:
         rest = after[bare_minute.end() :]
+        rest_title = _clean_title(rest)
         if (
             not rest.strip(_TRIM)
             or _BEFORE_START.match(rest)
             or _AFTER_START.match(rest)
-            or _is_action(_clean_title(rest))
+            or _is_action(rest_title)
+            or _event_title(rest_title) is not None
         ):
             return bare_minute
     return None
@@ -252,6 +283,15 @@ def _phrase(text: str, today: date, *, quick: bool = False) -> _Phrase:
         unsupported_clock = _unsupported_clock_suffix(match[0], after)
         clock_end = unsupported_clock.end() if unsupported_clock else 0
         after = after[clock_end:]
+        clock_range = False
+        if (
+            match["hour"]
+            and (separator := _CLOCK_RANGE_SEPARATOR.match(after))
+            and (other_clock := _CLOCK_ONLY.match(after, separator.end()))
+        ):
+            clock_range = True
+            clock_end += other_clock.end()
+            after = after[other_clock.end() :]
         tag = _TAG_END.search(before)
         if (
             tag
@@ -269,6 +309,13 @@ def _phrase(text: str, today: date, *, quick: bool = False) -> _Phrase:
         suffix_end = suffix.end() if suffix else 0
         leading = not _clean_title(before)
         trailing = not after[suffix_end:].strip(_TRIM)
+        event_before = _clean_title(before)
+        event_after = _clean_title(after[suffix_end:])
+        scheduled_event = (trailing and _event_title(event_before)) or (
+            re.fullmatch(_EVENT_SUBJECT, event_before)
+            and event_after.startswith("有")
+            and _event_title(f"{event_before}{event_after}")
+        )
         alternative = bool(spans and _RANGE_BETWEEN.fullmatch(text[spans[-1][1] : match.start()]))
         prefix_has_range = bool(
             not tag and _DEADLINE.search(before) and re.search(rf"{_RANGE}\s*$", before)
@@ -279,6 +326,7 @@ def _phrase(text: str, today: date, *, quick: bool = False) -> _Phrase:
             or before_limit
             or following_tag
             or leading
+            or scheduled_event
             or alternative
             or trailing
             and (quick or _is_action(_clean_title(before)))
@@ -287,7 +335,7 @@ def _phrase(text: str, today: date, *, quick: bool = False) -> _Phrase:
 
         if unsupported_clock:
             issue = _INVALID
-        elif alternative or prefix_has_range or _SHORT_RANGE.match(after):
+        elif clock_range or alternative or prefix_has_range or _SHORT_RANGE.match(after):
             issue = _AMBIGUOUS
         elif after_limit:
             issue = _UNCLEAR
@@ -336,7 +384,7 @@ def _notice_parts(text: str, today: date) -> Iterator[tuple[str, _Phrase]]:
             for connector in _CONJUNCTION.finditer(segment):
                 first, rest = segment[: connector.start()], segment[connector.end() :]
                 left = _phrase(first, today)
-                if not (_is_action(left.title) and _is_action(_phrase(rest, today).title)):
+                if not (_is_notice_task(left) and _is_notice_task(_phrase(rest, today))):
                     continue
                 if left.due_on is not None and not left.issue:
                     leading = _DEADLINE.search(first)
@@ -366,7 +414,7 @@ class LocalDraftProvider(LLMProvider):
         """Parse one quick entry, retaining plain titles when there is no deadline."""
         today = self._today or date.today()
         text = text.translate(_WIDTH).strip()
-        candidates = sum(_is_action(phrase.title) for _, phrase in _notice_parts(text, today))
+        candidates = sum(_is_notice_task(phrase) for _, phrase in _notice_parts(text, today))
         if candidates > 1:
             raise ValueError("一次添加一项任务。多项任务请使用「从通知导入」。")
         phrase = _phrase(text, today, quick=True)
@@ -390,7 +438,7 @@ class LocalDraftProvider(LLMProvider):
         for raw, phrase in _notice_parts(text, today):
             bullet = bool(_BULLET.match(raw))
             if _NEW_SECTION.match(raw) or (
-                section_bullets and not bullet and _is_action(phrase.title)
+                section_bullets and not bullet and _is_notice_task(phrase)
             ):
                 shared = None
                 waiting.clear()
@@ -418,7 +466,10 @@ class LocalDraftProvider(LLMProvider):
                         draft = drafts[index]
                         if phrase.due_on is not None:
                             drafts[index] = replace(
-                                draft, due_on=phrase.due_on, due_time=phrase.due_time
+                                draft,
+                                title=_event_title(draft.title) or draft.title,
+                                due_on=phrase.due_on,
+                                due_time=phrase.due_time,
                             )
                         elif phrase.issue:
                             drafts[index] = replace(
@@ -435,8 +486,12 @@ class LocalDraftProvider(LLMProvider):
             if _METADATA.match(phrase.title):
                 pending = None
                 continue
-            if not _is_action(phrase.title):
+            if not _is_notice_task(
+                phrase, has_context_deadline=pending is not None or shared is not None
+            ):
                 if not (section_verb and bullet and not phrase.issue):
+                    if _NEGATIVE.match(phrase.title) or _EVENT_CANCELLED.search(phrase.title):
+                        pending = None
                     continue
                 phrase = replace(phrase, title=section_verb + phrase.title)
 

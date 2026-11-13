@@ -123,6 +123,66 @@ def test_both_desktop_entry_points_save_normalized_deadlines(qtbot, tmp_path):
         reopened.dispose()
 
 
+@pytest.mark.parametrize("notice", ["明天8点 我有pre", "明天8点，我有pre"])
+def test_both_desktop_entry_points_save_a_scheduled_event(qtbot, tmp_path, notice):
+    from lifeos.ai.local_provider import LocalDraftProvider
+    from lifeos.ui.main_window import MainWindow
+    from lifeos.ui.message_import import MessageImportDialog
+
+    settings = Settings(data_dir=tmp_path)
+    database = create_database(settings)
+    deadline = date(2026, 11, 14), time(8)
+    expected_row = "pre  ·  截止 2026-11-14 08:00"
+    try:
+        command.upgrade(alembic_config(database.path), "head")
+        service = TaskService(database)
+        provider = LocalDraftProvider(today=date(2026, 11, 13))
+        window = MainWindow(
+            "test",
+            True,
+            service,
+            draft_preview=provider.extract_tasks,
+            quick_parse=provider.parse_quick_task,
+        )
+        qtbot.addWidget(window)
+        window.show()
+
+        window.task_panel.task_input.setText("明天8点 我有pre")
+        window.task_panel.task_input.returnPressed.emit()
+        (quick_task,) = service.list_tasks()
+        assert (quick_task.due_on, quick_task.due_time) == deadline
+        assert quick_task.title == "pre"
+        assert window.task_panel.task_titles()[0].endswith(expected_row)
+
+        window.message_import_button.click()
+        dialog = window.findChild(MessageImportDialog)
+        assert dialog is not None
+        dialog.message_input.setPlainText(notice)
+        dialog.generate_button.click()
+        assert service.list_tasks() == [quick_task]
+        assert dialog.draft_list.count() == 1
+        assert dialog.draft_list.item(0).text() == expected_row
+        assert dialog.title_input.text() == "pre"
+        assert dialog.due_input.text() == "2026-11-14 08:00"
+
+        dialog.save_button.click()
+        assert dialog.draft_list.count() == 0
+        dialog.reject()
+        assert len(window.task_panel.task_titles()) == 2
+        assert all(row.endswith(expected_row) for row in window.task_panel.task_titles())
+        window.close()
+    finally:
+        database.dispose()
+
+    reopened = create_database(settings)
+    try:
+        assert [
+            (task.title, task.due_on, task.due_time) for task in TaskService(reopened).list_tasks()
+        ] == [("pre", *deadline)] * 2
+    finally:
+        reopened.dispose()
+
+
 def test_late_completion_stays_distinct_after_reopening(qtbot, tmp_path, monkeypatch):
     from PySide6.QtCore import Qt
 
