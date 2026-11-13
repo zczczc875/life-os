@@ -104,7 +104,19 @@ def _local_minute() -> datetime:
     return datetime.now().replace(second=0, microsecond=0)
 
 
-class _TaskEditDialog(QDialog):
+def completed_after_deadline(task: TaskRecord) -> bool:
+    due_on = getattr(task, "due_on", None)
+    completed_at = getattr(task, "completed_at", None)
+    if due_on is None or completed_at is None:
+        return False
+    local_completed = completed_at.astimezone().replace(tzinfo=None, second=0, microsecond=0)
+    due_time = getattr(task, "due_time", None)
+    if due_time is None:
+        return local_completed.date() > due_on
+    return local_completed > datetime.combine(due_on, due_time)
+
+
+class TaskEditDialog(QDialog):
     """Edit the fields of one existing task and keep them available after errors."""
 
     def __init__(
@@ -184,11 +196,13 @@ class TaskPanel(QWidget):
         parent: QWidget | None = None,
         *,
         quick_parse: Callable[[str], ExtractedTask] | None = None,
+        show_completed: bool = True,
     ) -> None:
         super().__init__(parent)
         self._service = task_service
         self._can_edit = callable(getattr(task_service, "update_task", None))
         self._quick_parse = quick_parse
+        self._show_completed = show_completed
         self._loading = False
         self._rendered_at: datetime | None = None
         self._pending_deadlines: list[datetime] = []
@@ -216,7 +230,8 @@ class TaskPanel(QWidget):
         self.error_label.setStyleSheet("color: #b42318;")
         self.error_label.setVisible(False)
 
-        self.empty_label = QLabel(EMPTY_HINT_TEXT, self)
+        self._empty_text = EMPTY_HINT_TEXT if show_completed else "暂无待办任务。"
+        self.empty_label = QLabel(self._empty_text, self)
         self.empty_label.setObjectName("taskEmptyLabel")
         self.empty_label.setWordWrap(True)
         self.empty_label.setStyleSheet("color: #6b7280;")
@@ -280,7 +295,7 @@ class TaskPanel(QWidget):
         else:
             self._deadline_timer.start()
             self.task_list.setVisible(True)
-            self.empty_label.setText(EMPTY_HINT_TEXT)
+            self.empty_label.setText(self._empty_text)
             self._set_error("")
 
     def refresh(self) -> None:
@@ -365,7 +380,7 @@ class TaskPanel(QWidget):
             return
         item = selected[0]
         title, deadline = item.data(_TASK_FIELDS_ROLE)
-        dialog = _TaskEditDialog(
+        dialog = TaskEditDialog(
             self._service, item.data(Qt.ItemDataRole.UserRole), title, deadline, self
         )
         dialog.accepted.connect(self.refresh)
@@ -392,6 +407,8 @@ class TaskPanel(QWidget):
         now = _local_minute()
         self._rendered_at = now
         self._pending_deadlines.clear()
+        if not self._show_completed:
+            tasks = [task for task in tasks if task.status == STATUS_PENDING]
         if self.priority_sort_checkbox.isChecked():
             tasks_by_id = {task.id: task for task in tasks}
             pending = [tasks_by_id[item.task_id] for item in build_daily_plan(tasks, now=now)]
@@ -411,7 +428,7 @@ class TaskPanel(QWidget):
             self._loading = False
         has_tasks = bool(tasks)
         self.task_list.setVisible(has_tasks)
-        self.empty_label.setText(EMPTY_HINT_TEXT)
+        self.empty_label.setText(self._empty_text)
         self.empty_label.setVisible(not has_tasks)
 
     def _build_item(self, task: TaskRecord, now: datetime) -> QListWidgetItem:
@@ -425,14 +442,7 @@ class TaskPanel(QWidget):
             deadline = datetime.combine(due_on, due_time) if due_time is not None else None
             text = f"{text}  ·  截止 {due_text}"
             if completed:
-                completed_at = getattr(task, "completed_at", None)
-                if completed_at is not None:
-                    local_completed = completed_at.astimezone().replace(
-                        tzinfo=None, second=0, microsecond=0
-                    )
-                    completed_late = (
-                        local_completed > deadline if deadline else local_completed.date() > due_on
-                    )
+                completed_late = completed_after_deadline(task)
                 if completed_late:
                     text = f"{LATE_COMPLETION_TEXT}  ·  {text}"
             elif task.status == STATUS_PENDING:

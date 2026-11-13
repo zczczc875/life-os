@@ -14,7 +14,7 @@ from datetime import UTC, date, datetime, time
 
 import pytest
 from PySide6.QtCore import Qt, QTimer
-from PySide6.QtWidgets import QDialog, QLineEdit
+from PySide6.QtWidgets import QDialog, QLineEdit, QPushButton
 
 from lifeos.ai.provider import ExtractedTask, ProviderError, TaskExtractionResponse
 from lifeos.ui import task_panel
@@ -580,6 +580,21 @@ def test_main_window_without_service_still_builds(qtbot):
 
     assert window.task_panel.task_input.isEnabled() is False
     assert "未连接" in window.status_label.text()
+    assert window.findChild(QPushButton, "completedTasksButton") is None
+
+
+def test_main_window_task_list_only_shows_pending_items(qtbot):
+    service = FakeTaskService(
+        tasks=[
+            TaskDouble("done", "已完成的任务", STATUS_COMPLETED),
+            TaskDouble("pending", "待办任务"),
+        ]
+    )
+    window = MainWindow("test", True, task_service=service)
+    qtbot.addWidget(window)
+
+    assert window.task_panel.task_titles() == ["待办任务"]
+    assert window.completed_tasks_button.isEnabled()
 
 
 def _open_message_import(qtbot, service, preview):

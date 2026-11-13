@@ -28,6 +28,7 @@ from PySide6.QtWidgets import (
 from lifeos.config.close_preferences import ClosePreferencesError
 from lifeos.config.windows_startup import WindowsStartupError
 from lifeos.ui.close_dialog import CloseDialog
+from lifeos.ui.completed_tasks import CompletedTasksDialog
 from lifeos.ui.daily_plan import DailyPlanDialog
 from lifeos.ui.message_import import MessageImportDialog
 from lifeos.ui.reminders import ReminderPanel
@@ -99,7 +100,9 @@ class MainWindow(QMainWindow):
         heading_font.setBold(True)
         self.tasks_heading_label.setFont(heading_font)
 
-        self.task_panel = TaskPanel(task_service, self, quick_parse=quick_parse)
+        self.task_panel = TaskPanel(
+            task_service, self, quick_parse=quick_parse, show_completed=False
+        )
         tasks_header = QHBoxLayout()
         tasks_header.addWidget(self.tasks_heading_label, 1)
         if task_service is not None and draft_preview is not None:
@@ -114,6 +117,12 @@ class MainWindow(QMainWindow):
             self.daily_plan_button.setObjectName("dailyPlanButton")
             self.daily_plan_button.clicked.connect(lambda: self._open_daily_plan(task_service))
             tasks_header.addWidget(self.daily_plan_button)
+            self.completed_tasks_button = QPushButton("已完成任务", self)
+            self.completed_tasks_button.setObjectName("completedTasksButton")
+            self.completed_tasks_button.clicked.connect(
+                lambda: self._open_completed_tasks(task_service)
+            )
+            tasks_header.addWidget(self.completed_tasks_button)
 
         layout = QVBoxLayout()
         layout.setContentsMargins(32, 28, 32, 28)
@@ -247,6 +256,10 @@ class MainWindow(QMainWindow):
 
     def _open_daily_plan(self, task_service: TaskService) -> None:
         dialog = DailyPlanDialog(task_service, self)
+        dialog.open()
+
+    def _open_completed_tasks(self, task_service: TaskService) -> None:
+        dialog = CompletedTasksDialog(task_service, self)
         dialog.open()
 
     @staticmethod
