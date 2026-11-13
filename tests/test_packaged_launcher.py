@@ -2,6 +2,7 @@
 
 import importlib.util
 import sqlite3
+import sys
 from contextlib import closing
 from pathlib import Path
 
@@ -32,7 +33,7 @@ def isolated_data(qapp, monkeypatch, tmp_path):
     get_settings.cache_clear()
     launches = []
     errors = []
-    monkeypatch.setattr(lifeos.app, "main", lambda: launches.append(True) or 0)
+    monkeypatch.setattr(lifeos.app, "main", lambda **kwargs: launches.append(kwargs) or 0)
     monkeypatch.setattr(QMessageBox, "critical", lambda *args: errors.append(args))
     yield data, launches, errors
     get_settings.cache_clear()
@@ -87,7 +88,7 @@ def test_confirm_fresh_initialization_creates_latest_schema(isolated_data, monke
     assert launcher.main() == 0
     assert len(prompts) == 1
     assert _version(data / "lifeos.sqlite3") == head_revision()
-    assert launches == [True] and errors == []
+    assert len(launches) == 1 and errors == []
 
 
 def test_cancel_existing_upgrade_leaves_old_database_unchanged(isolated_data, monkeypatch):
@@ -117,7 +118,7 @@ def test_confirm_existing_upgrade_preserves_settings_and_backup(isolated_data, m
             ).fetchone() == ("test_value",)
         finally:
             connection.close()
-    assert launches == [True] and errors == []
+    assert len(launches) == 1 and errors == []
 
 
 def test_unknown_existing_version_refuses_upgrade(isolated_data, monkeypatch):
@@ -178,4 +179,32 @@ def test_v020_upgrade_preserves_task_and_legacy_backup(isolated_data, monkeypatc
             assert saved_task == task
             columns = {column[1] for column in connection.execute("PRAGMA table_info(tasks)")}
             assert ("reminder_claimed_at" in columns) == (path == database)
-    assert launches == [True] and errors == []
+    assert len(launches) == 1 and errors == []
+
+
+@pytest.mark.parametrize("existing", [False, True])
+def test_login_start_skips_uninitialized_or_old_database(isolated_data, monkeypatch, existing):
+    data, launches, errors = isolated_data
+    database = _old_database(data) if existing else None
+    prompts = _answer(monkeypatch, QMessageBox.StandardButton.Yes)
+    monkeypatch.setattr(sys, "argv", ["LifeOS.exe", "--start-in-tray"])
+
+    assert launcher.main() == 0
+    assert not prompts and not launches and not errors
+    if database is not None:
+        assert _version(database) == "0001_app_settings"
+        assert not list(data.glob("*.bak"))
+    else:
+        assert not data.exists()
+
+
+def test_login_start_passes_tray_mode_to_application(isolated_data, monkeypatch):
+    _, launches, errors = isolated_data
+    command.upgrade(Config(str(_PROJECT / "alembic.ini")), "head")
+    prompts = _answer(monkeypatch, QMessageBox.StandardButton.Yes)
+    monkeypatch.setattr(sys, "argv", ["LifeOS.exe", "--start-in-tray"])
+
+    assert launcher.main() == 0
+    assert len(launches) == 1
+    assert launches[0]["start_in_tray"] is True
+    assert not prompts and not errors

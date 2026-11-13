@@ -10,6 +10,8 @@ from pathlib import Path
 from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import QApplication, QMessageBox
 
+from lifeos.config.windows_startup import START_IN_TRAY_ARG
+
 
 def _existing_revision(path: Path, latest_revision: str) -> str | None:
     """Read the database version without creating or modifying the database."""
@@ -83,20 +85,28 @@ def _known_revisions() -> tuple[str, set[str]]:
 
 
 def main() -> int:
+    start_in_tray = START_IN_TRAY_ARG in sys.argv[1:]
     app = QApplication.instance() or QApplication(sys.argv)
     app.setApplicationName("LifeOS")
     app.setWindowIcon(QIcon(str(Path(__file__).with_name("LifeOS.ico"))))
+    instance = None
     try:
         from lifeos.config.settings import get_settings
         from lifeos.infrastructure.database.url import resolve_target
+        from lifeos.instance import SingleInstance
 
         settings = get_settings()
         target = resolve_target(settings)
+        instance = SingleInstance(target.path)
+        if not instance.acquire(activate_existing=not start_in_tray):
+            return 0
         head, known = _known_revisions()
         current = _existing_revision(target.path, head)
         if current is not None and current not in known:
             raise RuntimeError("数据库版本不在当前程序支持范围内，已停止启动以保护数据。")
         if current != head:
+            if start_in_tray:
+                return 0
             result = QMessageBox.question(
                 None,
                 "初始化或升级数据库",
@@ -120,10 +130,14 @@ def main() -> int:
 
         from lifeos.app import main as run_application
 
-        return run_application()
+        return run_application(start_in_tray=start_in_tray, instance=instance)
     except Exception as error:  # noqa: BLE001 - errors must be visible in a windowed build
-        QMessageBox.critical(None, "LifeOS 无法启动", f"启动或数据库升级失败：\n{error}")
+        if not start_in_tray:
+            QMessageBox.critical(None, "LifeOS 无法启动", f"启动或数据库升级失败：\n{error}")
         return 1
+    finally:
+        if instance is not None:
+            instance.close()
 
 
 if __name__ == "__main__":

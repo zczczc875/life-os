@@ -26,6 +26,7 @@ from PySide6.QtWidgets import (
 )
 
 from lifeos.config.close_preferences import ClosePreferencesError
+from lifeos.config.windows_startup import WindowsStartupError
 from lifeos.ui.close_dialog import CloseDialog
 from lifeos.ui.daily_plan import DailyPlanDialog
 from lifeos.ui.message_import import MessageImportDialog
@@ -39,6 +40,7 @@ if TYPE_CHECKING:
 
     from lifeos.ai.provider import ExtractedTask, TaskExtractionResponse
     from lifeos.config.close_preferences import CloseAction, ClosePreferences
+    from lifeos.config.windows_startup import WindowsStartup
     from lifeos.tasks.reminders import ReminderService
 
 APP_NAME = "LifeOS"
@@ -61,6 +63,7 @@ class MainWindow(QMainWindow):
         quick_parse: Callable[[str], ExtractedTask] | None = None,
         reminder_service: ReminderService | None = None,
         close_preferences: ClosePreferences | None = None,
+        windows_startup: WindowsStartup | None = None,
     ) -> None:
         super().__init__()
         self._app_version = app_version
@@ -72,11 +75,14 @@ class MainWindow(QMainWindow):
         self.resize(560, 640)
         self.setMinimumSize(460, 420)
         self._tray = self._build_tray()
-        if close_preferences is not None:
+        if close_preferences is not None or windows_startup is not None:
             settings_menu = self.menuBar().addMenu("设置")
-            restore_prompt = settings_menu.addAction("恢复关闭提示")
-            restore_prompt.setObjectName("resetCloseAction")
-            restore_prompt.triggered.connect(lambda: self._save_close_action(None))
+            if windows_startup is not None:
+                self._add_startup_action(settings_menu, windows_startup)
+            if close_preferences is not None:
+                restore_prompt = settings_menu.addAction("恢复关闭提示")
+                restore_prompt.setObjectName("resetCloseAction")
+                restore_prompt.triggered.connect(lambda: self._save_close_action(None))
 
         self.title_label = self._build_label("titleLabel", APP_NAME)
         title_font = QFont(self.title_label.font())
@@ -152,16 +158,13 @@ class MainWindow(QMainWindow):
             dialog.deleteLater()
         if action is None:
             return
-        if action == "tray" and not QSystemTrayIcon.isSystemTrayAvailable():
+        if action == "tray" and not self.minimize_to_tray():
             QMessageBox.information(self, APP_NAME, "系统托盘暂不可用，LifeOS 窗口将保持打开。")
             return
         if remember:
             self._save_close_action(action)
 
-        if action == "tray":
-            self._tray.show()
-            self.hide()
-        else:
+        if action == "exit":
             self._tray.hide()
             event.accept()
 
@@ -172,6 +175,25 @@ class MainWindow(QMainWindow):
         except ClosePreferencesError:
             QMessageBox.warning(self, APP_NAME, "暂时无法保存关闭设置。")
 
+    def _add_startup_action(self, menu: QMenu, startup: WindowsStartup) -> None:
+        action = menu.addAction("登录 Windows 后启动到托盘")
+        action.setObjectName("windowsStartupAction")
+        action.setCheckable(True)
+        try:
+            action.setChecked(startup.enabled())
+        except WindowsStartupError:
+            action.setText("登录 Windows 后启动到托盘（不可用）")
+            action.setEnabled(False)
+
+        def update(enabled: bool) -> None:
+            try:
+                startup.set_enabled(enabled)
+            except WindowsStartupError as error:
+                action.setChecked(not enabled)
+                QMessageBox.warning(self, APP_NAME, str(error))
+
+        action.triggered.connect(update)
+
     def _build_tray(self) -> QSystemTrayIcon:
         icon = QApplication.windowIcon()
         if icon.isNull():
@@ -179,9 +201,9 @@ class MainWindow(QMainWindow):
         tray = QSystemTrayIcon(icon, self)
         tray.setToolTip(APP_NAME)
         tray.activated.connect(self._tray_activated)
-        tray.messageClicked.connect(self._restore_window)
+        tray.messageClicked.connect(self.restore_window)
         menu = QMenu(self)
-        menu.addAction("打开 LifeOS", self._restore_window)
+        menu.addAction("打开 LifeOS", self.restore_window)
         quit_action = menu.addAction("退出 LifeOS", self._quit_from_tray)
         quit_action.setObjectName("trayQuitAction")
         tray.setContextMenu(menu)
@@ -192,9 +214,16 @@ class MainWindow(QMainWindow):
             QSystemTrayIcon.ActivationReason.Trigger,
             QSystemTrayIcon.ActivationReason.DoubleClick,
         ):
-            self._restore_window()
+            self.restore_window()
 
-    def _restore_window(self) -> None:
+    def minimize_to_tray(self) -> bool:
+        if not QSystemTrayIcon.isSystemTrayAvailable():
+            return False
+        self._tray.show()
+        self.hide()
+        return True
+
+    def restore_window(self) -> None:
         if self.isMinimized():
             self.showNormal()
         else:

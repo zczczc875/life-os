@@ -1,9 +1,15 @@
 """Composition root; component imports are deferred until startup."""
 
+from __future__ import annotations
+
 import sys
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from lifeos.instance import SingleInstance
 
 
-def main() -> int:
+def main(*, start_in_tray: bool = False, instance: SingleInstance | None = None) -> int:
     """Initialize infrastructure and run the desktop event loop."""
     from PySide6.QtWidgets import QApplication, QMessageBox
     from sqlalchemy import inspect
@@ -12,6 +18,7 @@ def main() -> int:
     from lifeos.ai.local_provider import LocalDraftProvider
     from lifeos.config.close_preferences import ClosePreferences
     from lifeos.config.settings import get_settings
+    from lifeos.config.windows_startup import WindowsStartup
     from lifeos.infrastructure.database.engine import create_database
     from lifeos.infrastructure.logging.setup import setup_logging
     from lifeos.tasks import TaskService
@@ -47,6 +54,11 @@ def main() -> int:
                     "然后重新启动 LifeOS。",
                 )
         provider = LocalDraftProvider() if task_service is not None else None
+        windows_startup = (
+            WindowsStartup.for_current_executable(settings.data_dir)
+            if instance is not None and task_service is not None
+            else None
+        )
         window = MainWindow(
             settings.app_version,
             database_status,
@@ -55,8 +67,12 @@ def main() -> int:
             quick_parse=provider.parse_quick_task if provider is not None else None,
             reminder_service=ReminderService(database) if task_service is not None else None,
             close_preferences=ClosePreferences(database) if task_service is not None else None,
+            windows_startup=windows_startup,
         )
-        window.show()
+        if instance is not None:
+            instance.activate_requested.connect(window.restore_window)
+        if not (start_in_tray and window.minimize_to_tray()):
+            window.show()
         return application.exec()
     finally:
         database.dispose()

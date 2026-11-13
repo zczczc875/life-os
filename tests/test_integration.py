@@ -17,7 +17,10 @@ def _install(monkeypatch, name, **members):
 
 
 @pytest.mark.parametrize("connected", [True, False])
-def test_startup_order_and_status(monkeypatch, connected):
+@pytest.mark.parametrize(
+    "start_in_tray,tray_available", [(False, True), (True, True), (True, False)]
+)
+def test_startup_order_and_status(monkeypatch, connected, start_in_tray, tray_available):
     calls = []
     settings = SimpleNamespace(app_version="test-version")
     expected_reminders = object()
@@ -56,6 +59,7 @@ def test_startup_order_and_status(monkeypatch, connected):
             quick_parse,
             reminder_service,
             close_preferences,
+            windows_startup,
         ):
             assert (version, status) == ("test-version", connected)
             assert (task_service is not None) is connected
@@ -63,6 +67,7 @@ def test_startup_order_and_status(monkeypatch, connected):
             assert (quick_parse is not None) is connected
             assert reminder_service is (expected_reminders if connected else None)
             assert close_preferences is (expected_close_preferences if connected else None)
+            assert windows_startup is None
             if draft_preview is not None:
                 [draft] = draft_preview("交表 DDL: 2026-12-18").tasks
                 assert draft.title == "交表"
@@ -75,6 +80,10 @@ def test_startup_order_and_status(monkeypatch, connected):
 
         def show(self):
             calls.append("show")
+
+        def minimize_to_tray(self):
+            calls.append("tray")
+            return tray_available
 
     def get_settings():
         calls.append("settings")
@@ -112,7 +121,7 @@ def test_startup_order_and_status(monkeypatch, connected):
     _install(monkeypatch, "lifeos.tasks.reminders", ReminderService=lambda _: expected_reminders)
     _install(monkeypatch, "lifeos.ui.main_window", MainWindow=Window)
 
-    assert main() == 0
+    assert main(start_in_tray=start_in_tray) == 0
     assert calls == [
         "settings",
         "logging",
@@ -120,7 +129,8 @@ def test_startup_order_and_status(monkeypatch, connected):
         "check",
         "application",
         "window",
-        "show",
+        *(["tray"] if start_in_tray else []),
+        *(["show"] if not start_in_tray or not tray_available else []),
         "exec",
         "dispose",
     ]

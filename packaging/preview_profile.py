@@ -4,4 +4,5 @@ import os
 from pathlib import Path
 
 local_app_data = os.environ.get("LOCALAPPDATA") or Path.home() / "AppData" / "Local"
+os.environ["LIFEOS_PREVIEW_PROFILE"] = "1"
 os.environ.setdefault("LIFEOS_DATA_DIR", str(Path(local_app_data) / "LifeOS Preview" / "data"))
