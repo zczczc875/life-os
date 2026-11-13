@@ -61,6 +61,7 @@ def test_migration_creates_the_documented_columns(database):
         "due_on",
         "due_time",
         "reminder_claimed_at",
+        "advance_reminder_mask",
     }
     assert columns["id"]["nullable"] is False
     assert columns["title"]["nullable"] is False
@@ -70,6 +71,7 @@ def test_migration_creates_the_documented_columns(database):
     assert columns["due_on"]["nullable"] is True
     assert columns["due_time"]["nullable"] is True
     assert columns["reminder_claimed_at"]["nullable"] is True
+    assert columns["advance_reminder_mask"]["nullable"] is False
 
     assert inspect(database.engine).get_pk_constraint("tasks")["constrained_columns"] == ["id"]
 

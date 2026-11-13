@@ -45,6 +45,7 @@ def _existing_revision(path: Path, latest_revision: str) -> str | None:
                 "due_on",
                 "due_time",
                 "reminder_claimed_at",
+                "advance_reminder_mask",
             }.issubset(task_columns):
                 raise RuntimeError("数据库版本已是最新，但表结构不完整。请备份数据库并联系开发者。")
         return revision

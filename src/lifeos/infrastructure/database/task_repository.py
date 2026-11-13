@@ -109,6 +109,9 @@ class TaskRepository:
         due_time: _datetime.time | None = None,
     ) -> TaskRecord | None:
         """Replace editable fields, then read the current row."""
+        deadline_changed = TaskRecord.due_on.is_distinct_from(
+            due_on
+        ) | TaskRecord.due_time.is_distinct_from(due_time)
         statement = (
             update(TaskRecord)
             .where(TaskRecord.id == task_id)
@@ -117,9 +120,11 @@ class TaskRepository:
                 due_on=due_on,
                 due_time=due_time,
                 reminder_claimed_at=case(
-                    (TaskRecord.due_on.is_distinct_from(due_on), None),
-                    (TaskRecord.due_time.is_distinct_from(due_time), None),
+                    (deadline_changed, None),
                     else_=TaskRecord.reminder_claimed_at,
+                ),
+                advance_reminder_mask=case(
+                    (deadline_changed, 0), else_=TaskRecord.advance_reminder_mask
                 ),
             )
         )

@@ -193,6 +193,7 @@ def test_only_reviewed_revisions_are_committed():
         "0003_task_due_on.py",
         "0004_task_due_time.py",
         "0005_task_reminders.py",
+        "0006_advance_reminders.py",
     ]
 
 
@@ -266,7 +267,7 @@ def test_reminder_migration_preserves_existing_deadlines_and_defaults_off(tmp_pa
                     " '2026-11-12', '09:00:00.000000')"
                 )
             )
-        assert database.ensure_schema() == "0005_task_reminders"
+        assert database.ensure_schema() == HEAD_REVISION
 
         reminders = ReminderService(database)
         (task,) = TaskService(database).list_tasks()
@@ -282,6 +283,46 @@ def test_reminder_migration_preserves_existing_deadlines_and_defaults_off(tmp_pa
         reminders.set_enabled(True)
         assert reminders.claim_due(now) == [task]
         assert reminders.claim_due(now) == []
+    finally:
+        database.dispose()
+
+
+def test_advance_migration_keeps_due_claims_and_disables_advance_by_default(tmp_path: Path):
+    from alembic import command
+
+    config = alembic_config(tmp_path / "lifeos.sqlite3")
+    command.upgrade(config, "0005_task_reminders")
+    database = create_database(_settings(tmp_path))
+    try:
+        with database.engine.begin() as connection:
+            connection.execute(
+                text(
+                    "INSERT INTO tasks (id, title, status, created_at, due_on, due_time,"
+                    " reminder_claimed_at) VALUES ('old', '已有任务', 'pending',"
+                    " '2026-11-11 08:00:00', '2026-11-12', '09:00:00.000000',"
+                    " '2026-11-12 01:00:00')"
+                )
+            )
+            connection.execute(
+                text(
+                    "INSERT INTO app_settings (key, value, updated_at) VALUES"
+                    " ('reminders.due_enabled', 'true', '2026-11-11 08:00:00')"
+                )
+            )
+        assert database.ensure_schema() == "0006_advance_reminders"
+
+        reminders = ReminderService(database)
+        (task,) = TaskService(database).list_tasks()
+        assert (task.id, task.due_on, task.due_time) == ("old", date(2026, 11, 12), time(9))
+        assert reminders.enabled()
+        assert reminders.advance_minutes() == ()
+        with database.engine.connect() as connection:
+            assert connection.execute(
+                text("SELECT reminder_claimed_at, advance_reminder_mask FROM tasks")
+            ).one() == ("2026-11-12 01:00:00", 0)
+        assert reminders.claim_reminders(datetime(2026, 11, 12, 9)) == ([], [])
+        reminders.set_advance_minutes([15])
+        assert reminders.claim_reminders(datetime(2026, 11, 12, 8, 50)) == ([], [])
     finally:
         database.dispose()
 

@@ -73,6 +73,27 @@ def _old_database(data):
     return database
 
 
+@pytest.fixture
+def rc3_database(isolated_data):
+    data, _, _ = isolated_data
+    command.upgrade(Config(str(_PROJECT / "alembic.ini")), "0005_task_reminders")
+    database = data / "lifeos.sqlite3"
+    task = ("saved-task", "交实验报告", "2026-11-12", "17:30:00.000000", "2026-11-12 09:30:00")
+    settings = [("reminders.due_enabled", "true"), ("window.close_action", "tray")]
+    with closing(sqlite3.connect(database)) as connection:
+        connection.execute(
+            "INSERT INTO tasks(id, title, status, created_at, due_on, due_time, reminder_claimed_at) "
+            "VALUES (?, ?, 'pending', '2026-11-11', ?, ?, ?)",
+            task,
+        )
+        connection.executemany(
+            "INSERT INTO app_settings(key, value, updated_at) VALUES (?, ?, '2026-11-11')",
+            settings,
+        )
+        connection.commit()
+    return database, task, settings
+
+
 def test_cancel_fresh_initialization_creates_no_database(isolated_data, monkeypatch):
     data, launches, errors = isolated_data
     prompts = _answer(monkeypatch, QMessageBox.StandardButton.No)
@@ -137,10 +158,13 @@ def test_unknown_existing_version_refuses_upgrade(isolated_data, monkeypatch):
     assert not list(data.glob("*.bak"))
 
 
-def test_latest_schema_without_reminder_column_refuses_launch(isolated_data, monkeypatch):
+@pytest.mark.parametrize("old_revision", ["0004_task_due_time", "0005_task_reminders"])
+def test_latest_schema_without_reminder_column_refuses_launch(
+    isolated_data, monkeypatch, old_revision
+):
     data, launches, errors = isolated_data
     config = Config(str(_PROJECT / "alembic.ini"))
-    command.upgrade(config, "0004_task_due_time")
+    command.upgrade(config, old_revision)
     command.stamp(config, head_revision())
     database = data / "lifeos.sqlite3"
     prompts = _answer(monkeypatch, QMessageBox.StandardButton.Yes)
@@ -180,6 +204,51 @@ def test_v020_upgrade_preserves_task_and_legacy_backup(isolated_data, monkeypatc
             columns = {column[1] for column in connection.execute("PRAGMA table_info(tasks)")}
             assert ("reminder_claimed_at" in columns) == (path == database)
     assert len(launches) == 1 and errors == []
+
+
+@pytest.mark.parametrize("start_in_tray", [False, True], ids=["decline-manual", "login"])
+def test_rc3_upgrade_waits_for_manual_approval(
+    isolated_data, rc3_database, monkeypatch, start_in_tray
+):
+    data, launches, errors = isolated_data
+    database, _, _ = rc3_database
+    before = database.read_bytes()
+    prompts = _answer(monkeypatch, QMessageBox.StandardButton.No)
+    if start_in_tray:
+        monkeypatch.setattr(sys, "argv", ["LifeOS.exe", "--start-in-tray"])
+
+    assert launcher.main() == 0
+    assert len(prompts) == (0 if start_in_tray else 1)
+    assert not launches and not errors
+    assert database.read_bytes() == before
+    assert not list(data.glob("*.bak"))
+
+
+def test_rc3_upgrade_preserves_due_claim_and_settings(isolated_data, rc3_database, monkeypatch):
+    data, launches, errors = isolated_data
+    database, task, settings = rc3_database
+    prompts = _answer(monkeypatch, QMessageBox.StandardButton.Yes)
+
+    assert launcher.main() == 0
+    assert len(prompts) == 1 and len(launches) == 1 and not errors
+    assert _version(database) == "0006_advance_reminders"
+    [backup] = data.glob("lifeos.sqlite3.before-upgrade-*.bak")
+    assert _version(backup) == "0005_task_reminders"
+    for path in (database, backup):
+        with closing(sqlite3.connect(path)) as connection:
+            assert connection.execute("PRAGMA integrity_check").fetchone() == ("ok",)
+            saved_task = connection.execute(
+                "SELECT id, title, due_on, due_time, reminder_claimed_at FROM tasks"
+            ).fetchone()
+            assert saved_task == task
+            assert (
+                connection.execute("SELECT key, value FROM app_settings ORDER BY key").fetchall()
+                == settings
+            )
+            if path == database:
+                assert connection.execute("SELECT advance_reminder_mask FROM tasks").fetchone() == (
+                    0,
+                )
 
 
 @pytest.mark.parametrize("existing", [False, True])

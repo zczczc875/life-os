@@ -105,7 +105,10 @@ def test_startup_order_and_status(monkeypatch, connected, start_in_tray, tray_av
 
         def get_columns(self, name):
             assert name == "tasks"
-            return [{"name": name} for name in ("due_on", "due_time", "reminder_claimed_at")]
+            return [
+                {"name": name}
+                for name in ("due_on", "due_time", "reminder_claimed_at", "advance_reminder_mask")
+            ]
 
     monkeypatch.setattr(sqlalchemy, "inspect", lambda engine: Inspector())
     _install(monkeypatch, "PySide6.QtWidgets", QApplication=Application, QMessageBox=object)
@@ -115,6 +118,7 @@ def test_startup_order_and_status(monkeypatch, connected, start_in_tray, tray_av
         ClosePreferences=lambda database: expected_close_preferences,
     )
     _install(monkeypatch, "lifeos.config.settings", get_settings=get_settings)
+    _install(monkeypatch, "lifeos.config.windows_startup", WindowsStartup=object)
     _install(monkeypatch, "lifeos.infrastructure.database.engine", create_database=create_database)
     _install(monkeypatch, "lifeos.infrastructure.logging.setup", setup_logging=setup_logging)
     _install(monkeypatch, "lifeos.tasks", TaskService=lambda database: object())
@@ -149,6 +153,7 @@ def test_disposes_database_on_connection_error(monkeypatch):
     _install(monkeypatch, "PySide6.QtWidgets", QApplication=object, QMessageBox=object)
     _install(monkeypatch, "lifeos.config.close_preferences", ClosePreferences=object)
     _install(monkeypatch, "lifeos.config.settings", get_settings=lambda: object())
+    _install(monkeypatch, "lifeos.config.windows_startup", WindowsStartup=object)
     _install(
         monkeypatch, "lifeos.infrastructure.database.engine", create_database=lambda _: Database()
     )
@@ -162,7 +167,10 @@ def test_disposes_database_on_connection_error(monkeypatch):
     assert calls == ["dispose"]
 
 
-@pytest.mark.parametrize("revision", [None, "0002_tasks", "0003_task_due_on", "0004_task_due_time"])
+@pytest.mark.parametrize(
+    "revision",
+    [None, "0002_tasks", "0003_task_due_on", "0004_task_due_time", "0005_task_reminders"],
+)
 def test_unmigrated_database_prompts_and_disables_tasks(qapp, monkeypatch, tmp_path, revision):
     from alembic import command
     from PySide6.QtWidgets import QApplication, QMessageBox

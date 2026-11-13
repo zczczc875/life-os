@@ -39,6 +39,7 @@ def main(*, start_in_tray: bool = False, instance: SingleInstance | None = None)
                     "due_on",
                     "due_time",
                     "reminder_claimed_at",
+                    "advance_reminder_mask",
                 } <= {column["name"] for column in inspector.get_columns("tasks")}
             except SQLAlchemyError:
                 database_status = False

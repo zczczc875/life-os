@@ -128,7 +128,11 @@ def test_unavailable_tray_does_not_hide_window(tray_window, monkeypatch):
 
 def test_reminders_keep_scanning_with_window_hidden(qtbot, tray_window):
     scans = []
-    service = SimpleNamespace(enabled=lambda: True, claim_due=lambda now: scans.append(now) or [])
+    service = SimpleNamespace(
+        enabled=lambda: True,
+        advance_minutes=lambda: (),
+        claim_reminders=lambda now: scans.append(now) or ([], []),
+    )
     window = tray_window(Preferences("tray"), reminder_service=service)
     assert len(window.findChildren(QSystemTrayIcon)) == 1
     window.close()

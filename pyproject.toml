@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "lifeos"
-version = "0.3.0rc3"
+version = "0.3.0rc4"
 description = "Local-first Windows desktop foundation for LifeOS"
 requires-python = ">=3.12"
 dependencies = [

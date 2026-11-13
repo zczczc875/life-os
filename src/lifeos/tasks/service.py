@@ -67,8 +67,11 @@ def _storage_error(error: Exception) -> TaskStorageError:
             "no such column: tasks.due_time",
             "no such column: tasks.reminder_claimed_at",
             "no such column: reminder_claimed_at",
+            "no such column: tasks.advance_reminder_mask",
+            "no such column: advance_reminder_mask",
             "table tasks has no column named due_on",
             "table tasks has no column named due_time",
+            "table tasks has no column named advance_reminder_mask",
         ):
             return TaskStorageError(
                 "任务数据表需要更新，请先执行数据库迁移：python -m alembic upgrade head"

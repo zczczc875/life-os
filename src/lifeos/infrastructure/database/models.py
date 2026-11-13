@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import datetime as _datetime
 
-from sqlalchemy import CheckConstraint, Date, DateTime, Index, String, Text, Time
+from sqlalchemy import CheckConstraint, Date, DateTime, Index, Integer, String, Text, Time
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 __all__ = [
@@ -121,6 +121,7 @@ class TaskRecord(Base):
         nullable=True,
     )
     reminder_claimed_at: Mapped[_datetime.datetime | None] = mapped_column(DateTime, nullable=True)
+    advance_reminder_mask: Mapped[int] = mapped_column(Integer, server_default="0", nullable=False)
 
     __table_args__ = (
         # Reject unknown states at the storage layer, so a service bug cannot
